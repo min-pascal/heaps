@@ -15,6 +15,8 @@ class Window {
 
 	public var width(get, never) : Int;
 	public var height(get, never) : Int;
+	public var x(get, set) : Int;
+	public var y(get, set) : Int;
 	public var mouseX(get, never) : Int;
 	public var mouseY(get, never) : Int;
 	@:deprecated("Use mouseMode = AbsoluteUnbound(true)")
@@ -114,7 +116,7 @@ class Window {
 	public function setCursorPos( x : Int, y : Int, emitEvent : Bool = false ) : Void {
 		throw "Not implemented";
 	}
-	
+
 	public function setCurrent() {
 	}
 
@@ -183,5 +185,28 @@ class Window {
 	}
 	function set_title( t : String ) : String {
 		return t;
+	}
+
+	function get_x() : Int {
+		return 0;
+	}
+
+	function set_x( value : Int ) : Int {
+		return value;
+	}
+
+	function get_y() : Int {
+		return 0;
+	}
+
+	function set_y( value : Int ) : Int {
+		return value;
+	}
+
+	/**
+		Set the window position on screen.
+	**/
+	public function setPosition( x : Int, y : Int ) : Void {
+		throw "Not implemented";
 	}
 }

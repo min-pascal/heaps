@@ -49,6 +49,8 @@ class Window {
 	public var id : Int;
 	public var width(get, never) : Int;
 	public var height(get, never) : Int;
+	public var x(get, set) : Int;
+	public var y(get, set) : Int;
 	public var mouseX(get, never) : Int;
 	public var mouseY(get, never) : Int;
 	@:deprecated("Use mouseMode = AbsoluteUnbound(true)")
@@ -841,6 +843,45 @@ class Window {
 		return window.title = t;
 		#end
 		return "";
+	}
+
+	function get_x() : Int {
+		#if (hldx || hlsdl)
+		return window.x;
+		#end
+		return 0;
+	}
+
+	function set_x( value : Int ) : Int {
+		#if (hldx || hlsdl)
+		window.setPosition(value, window.y);
+		#end
+		return value;
+	}
+
+	function get_y() : Int {
+		#if (hldx || hlsdl)
+		return window.y;
+		#end
+		return 0;
+	}
+
+	function set_y( value : Int ) : Int {
+		#if (hldx || hlsdl)
+		window.setPosition(window.x, value);
+		#end
+		return value;
+	}
+
+	/**
+		Set the window position on screen.
+	**/
+	public function setPosition( x : Int, y : Int ) : Void {
+		#if (hldx || hlsdl)
+		window.setPosition(x, y);
+		#else
+		throw "Not implemented";
+		#end
 	}
 
 	public function setCurrent() {
