@@ -10,6 +10,7 @@ bin
 /samples/build
 /*.xml
 .vscode
+/.idea
 /tools/meshtools/out
 *.exe
 /shaders
