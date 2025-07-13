@@ -88,26 +88,30 @@ class Engine {
 		window.addResizeEvent(onWindowResize);
 		setCurrent();
 		#if macro
-		driver = new h3d.impl.NullDriver();
+			driver = new h3d.impl.NullDriver();
 		#elseif (js || hlsdl || usegl)
-		#if (hlsdl && heaps_vulkan)
-		if( hxd.Window.USE_VULKAN )
-			driver = new h3d.impl.VulkanDriver();
-		else
-		#end
-		#if js
-		driver = js.Browser.supported ? new h3d.impl.GlDriver(antiAlias) : new h3d.impl.NullDriver();
-		#else
-		driver = new h3d.impl.GlDriver(antiAlias);
-		#end
+			#if (hlsdl && heaps_vulkan)
+			if( hxd.Window.USE_VULKAN )
+				driver = new h3d.impl.VulkanDriver();
+			else
+			#end
+			#if (metal && (macos || ios))
+				driver = new h3d.impl.MetalDriver();
+			#else
+				#if js
+				driver = js.Browser.supported ? new h3d.impl.GlDriver(antiAlias) : new h3d.impl.NullDriver();
+				#else
+				driver = new h3d.impl.GlDriver(antiAlias);
+				#end
+			#end
 		#elseif (hldx && dx12)
-		driver = new h3d.impl.DX12Driver();
+			driver = new h3d.impl.DX12Driver();
 		#elseif hldx
-		driver = new h3d.impl.DirectXDriver();
+			driver = new h3d.impl.DirectXDriver();
 		#elseif usesys
-		driver = new haxe.GraphicsDriver(antiAlias);
+			driver = new haxe.GraphicsDriver(antiAlias);
 		#else
-		#if sys Sys.println #else trace #end("No output driver available." #if hl + " Compile with -lib hlsdl or -lib hldx" #end);
+			#if sys Sys.println #else trace #end("No output driver available." #if hl + " Compile with -lib hlsdl or -lib hldx" #end);
 		#end
 	}
 
