@@ -95,7 +95,7 @@ class Engine {
 				driver = new h3d.impl.VulkanDriver();
 			else
 			#end
-			#if (hlmetal && (macos || ios))
+			#if (metal && (macos || ios))
 				driver = new h3d.impl.MetalDriver();
 			#else
 				#if js
