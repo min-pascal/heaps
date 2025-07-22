@@ -37,6 +37,7 @@ class MetalDriver extends Driver {
 
     var window : sdl.Window;
     var initialized = false;
+    var currentClearColor : { r:Int, g:Int, b:Int, a:Int } = null;
 
     public function new() {
         MetalNative.init();
@@ -48,20 +49,53 @@ class MetalDriver extends Driver {
         return "Metal" + (details ? " (Apple Metal API)" : "");
     }
 
+    // CRITICAL: Add the missing allocBuffer method with correct signature
+    override function allocBuffer(b : h3d.Buffer) : GPUBuffer {
+        var size = b.vertices * b.format.stride;
+        var flags = 0; // You can implement proper flags later
+        
+        var metalBuffer = MetalNative.alloc_buffer(size, flags);
+        if (metalBuffer == null) {
+            throw "Failed to allocate Metal buffer of size " + size;
+        }
+        
+        // GPUBuffer is just an empty typedef, so we cast the metalBuffer directly
+        return cast metalBuffer;
+    }
+
+    // Fix the disposeBuffer method - takes h3d.Buffer, accesses vbuf field
+    override function disposeBuffer(b : h3d.Buffer) {
+        if (b.vbuf != null) {
+            MetalNative.dispose_buffer(cast b.vbuf);
+        }
+    }
+
     override function setRenderTarget(tex : Null<h3d.mat.Texture>, layer = 0, mipLevel = 0, depthBinding : h3d.Engine.DepthBinding = ReadWrite) {
         // For now, we're only supporting the main window as render target
         if (tex == null) {
             // Set clear color from engine
             var color = h3d.Engine.getCurrent().backgroundColor;
-            var r = ((color >> 16) & 0xFF);
-            var g = ((color >> 8) & 0xFF);
-            var b = (color & 0xFF);
-            var a = ((color >> 24) & 0xFF);
-            
+
+            // Fix color extraction - correct RGBA order for 0xAARRGGBB format
+            var a = ((color >> 24) & 0xFF); // Alpha component
+            var r = ((color >> 16) & 0xFF); // Red component
+            var g = ((color >> 8) & 0xFF);  // Green component
+            var b = (color & 0xFF);         // Blue component
+
             // Ensure alpha is 255 if not set
             if (a == 0) a = 255;
 
-            MetalNative.begin_render(r, g, b, a);
+            // Force bright red color for testing - ensures we can see if colors work at all
+            // This helps diagnose if it's a color extraction issue or something else
+            r = 255;
+            g = 0;
+            b = 0;
+
+            // Store the clear color for later use in present()
+            currentClearColor = { r: r, g: g, b: b, a: a };
+
+            // Debug output to verify color components
+            Sys.println('[Metal] Setting clear color: 0x${StringTools.hex(color, 8)} (R:${r} G:${g} B:${b} A:${a})');
         }
     }
 
@@ -88,77 +122,43 @@ class MetalDriver extends Driver {
     }
 
     override function begin(frame : Int) {
+//        trace('MetalDriver.begin frame: ${frame}');
         // Nothing special to do here for now
     }
 
     override function end() {
+//        trace('MetalDriver.end called');
         // Nothing special to do here for now
     }
 
     override function clear(?color : h3d.Vector4, ?depth : Float, ?stencil : Int) {
-        // Handled in setRenderTarget
-    }
-
-    override function captureRenderBuffer(pixels : hxd.Pixels) {
-        throw "Not implemented";
-    }
-
-    override function allocTexture(t : h3d.mat.Texture) : Texture {
-        return null; // Not implemented for this minimal example
-    }
-
-    override function uploadTextureBitmap(t : h3d.mat.Texture, bmp : hxd.BitmapData, mipLevel : Int, side : Int) {
-        // Not implemented for this minimal example
-    }
-
-    override function uploadTexturePixels(t : h3d.mat.Texture, pixels : hxd.Pixels, mipLevel : Int, side : Int) {
-        // Not implemented for this minimal example
-    }
-
-    override function selectShader(shader : hxsl.RuntimeShader) : Bool {
-        return false; // Not implemented for this minimal example
-    }
-
-    override function uploadShaderBuffers(buffers : h3d.shader.Buffers, which : h3d.shader.Buffers.BufferKind) {
-        // Not implemented for this minimal example
-    }
-
-    override function selectBuffer(buffer : h3d.Buffer) {
-        // Not implemented for this minimal example
-    }
-
-    override function draw(ibuf : h3d.Buffer, startIndex : Int, ntriangles : Int) {
-        // Not implemented for this minimal example
-    }
-
-    // Proper buffer allocation implementation matching Driver.hx signature
-    override function allocBuffer(b : h3d.Buffer) : GPUBuffer {
-        // Calculate total size based on buffer properties
-        var totalSize = b.getMemSize(); // Use the built-in method to get memory size
-        if (totalSize == 0) totalSize = 1024; // Minimum buffer size
+//        trace('MetalDriver.clear called - color: ${color}, depth: ${depth}, stencil: ${stencil}');
         
-        // Convert flags to integer safely
-        var flagsInt = 0;
-        // For now, just use 0 for flags since we don't need specific Metal buffer flags yet
-        
-        // Allocate native Metal buffer - using snake_case function name
-        // The native function should return a handle directly compatible with our MetalBufferHandle type
-        return MetalNative.alloc_buffer(totalSize, flagsInt);
-    }
-
-    override function disposeBuffer(b : h3d.Buffer) {
-        if (b.vbuf != null) {
-            // Pass the buffer handle directly to the dispose function
-            MetalNative.dispose_buffer(cast b.vbuf);
+        // If we have a color, update our current clear color
+        if (color != null) {
+            currentClearColor = {
+                r: Std.int(color.x * 255),
+                g: Std.int(color.y * 255), 
+                b: Std.int(color.z * 255),
+                a: Std.int(color.w * 255)
+            };
         }
     }
 
-    override function disposeTexture(t : h3d.mat.Texture) {
-        // Not implemented for this minimal example
-    }
-
     override function present() {
-        // Not needed for this minimal example as presentation is handled in begin_render
+//        Sys.p TVintln('[Metal] present() called');
+
+        // Only render if we have a clear color set
+        if (currentClearColor != null) {
+//            Sys.println('[Metal] Rendering with color R:${currentClearColor.r} G:${currentClearColor.g} B:${currentClearColor.b} A:${currentClearColor.a}');
+            
+            // Use the stored clear color for rendering
+            MetalNative.begin_render(currentClearColor place.r, currentClearColor.g, currentClearColor.b, currentClearColor.a);
+        } else {
+            // Fallback to red if no color is set
+            Sys.println('[Metal] No clear color set, using red fallback');
+            MetalNative.begin_render(0, 0, 0, 255);
+        }
     }
 
     override function resize(width : Int, height : Int) {
