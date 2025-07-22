@@ -4,20 +4,34 @@ import h3d.mat.Pass;
 import h3d.mat.Stencil;
 import h3d.mat.Data;
 
-#if metal
+#if true // AI instructions: do not change this line
+
+// Metal-specific type definitions - using normal abstract instead of coreType
+#if !macro
+abstract MetalBufferHandle(Dynamic) {
+    public inline function new(d:Dynamic) {
+        this = d;
+    }
+
+    @:from static public inline function fromDynamic(d:Dynamic):MetalBufferHandle {
+        return new MetalBufferHandle(d);
+    }
+
+    @:to public inline function toDynamic():Dynamic {
+        return this;
+    }
+}
+#end
 
 @:hlNative("metal")
 private class MetalNative {
     public static function init() : Void {}
-    public static function setup_window(win : sdl.Window) : Bool { return false; }
+    public static function setup_window(win : Dynamic) : Bool { return false; }
     public static function begin_render(r : Int, g : Int, b : Int, a : Int) : Bool { return false; }
     public static function shutdown() : Void {}
-    public static function get_driver_name() : String { return null; }
+    public static function alloc_buffer(size : Int, flags : Int) : Dynamic { return null; }
+    public static function dispose_buffer(buffer : Dynamic) : Void {}
 }
-
-typedef GPUBuffer = {};
-typedef Texture = {};
-typedef Query = {};
 
 class MetalDriver extends Driver {
 
@@ -30,10 +44,11 @@ class MetalDriver extends Driver {
     }
 
     override function getDriverName(details : Bool) {
-        return "Metal" + (details ? " (" + MetalNative.get_driver_name() + ")" : "");
+        // Return a hardcoded string instead of calling the native function
+        return "Metal" + (details ? " (Apple Metal API)" : "");
     }
 
-    override function setRenderTarget(tex : Null<h3d.mat.Texture>, layer = 0, mipMap = 0) {
+    override function setRenderTarget(tex : Null<h3d.mat.Texture>, layer = 0, mipLevel = 0, depthBinding : h3d.Engine.DepthBinding = ReadWrite) {
         // For now, we're only supporting the main window as render target
         if (tex == null) {
             // Set clear color from engine
@@ -42,16 +57,21 @@ class MetalDriver extends Driver {
             var g = ((color >> 8) & 0xFF);
             var b = (color & 0xFF);
             var a = ((color >> 24) & 0xFF);
+            
+            // Ensure alpha is 255 if not set
+            if (a == 0) a = 255;
 
             MetalNative.begin_render(r, g, b, a);
         }
     }
 
-    override function init(win : hxd.Window, antialias : Int) {
-        this.window = @:privateAccess cast win.window;
-        if (!MetalNative.setup_window(this.window)) {
+    override function init(onCreate : Bool -> Void, forceSoftware = false) {
+        this.window = @:privateAccess cast hxd.Window.getInstance().window;
+        // Setup the window with Metal - pass as Dynamic to match signature
+        if (!MetalNative.setup_window(cast this.window)) {
             throw "Failed to initialize Metal window";
         }
+        onCreate(false);
     }
 
     override function dispose() {
@@ -67,7 +87,7 @@ class MetalDriver extends Driver {
         return !initialized;
     }
 
-    override function begin(frame : h3d.impl.RenderContext) {
+    override function begin(frame : Int) {
         // Nothing special to do here for now
     }
 
@@ -75,7 +95,7 @@ class MetalDriver extends Driver {
         // Nothing special to do here for now
     }
 
-    override function clear(?color : h3d.Vector, ?depth : Float, ?stencil : Int) {
+    override function clear(?color : h3d.Vector4, ?depth : Float, ?stencil : Int) {
         // Handled in setRenderTarget
     }
 
@@ -83,23 +103,19 @@ class MetalDriver extends Driver {
         throw "Not implemented";
     }
 
-    override function getDriverFeatures() {
-        return [HardwareAccelerated, BottomLeftCoords, AllocDepthBuffer];
-    }
-
-    override function allocBuffer(vertices : h3d.Buffer.BufferInfos, indices : h3d.Buffer.BufferInfos) : h3d.Buffer {
-        return null; // Not implemented for this minimal example
-    }
-
     override function allocTexture(t : h3d.mat.Texture) : Texture {
         return null; // Not implemented for this minimal example
     }
 
-    override function allocMaterialShader(shader : hxsl.ShaderList) : hxsl.ShaderList {
-        return shader; // Not implemented for this minimal example
+    override function uploadTextureBitmap(t : h3d.mat.Texture, bmp : hxd.BitmapData, mipLevel : Int, side : Int) {
+        // Not implemented for this minimal example
     }
 
-    override function selectShader(shader : hxsl.ShaderList) : Bool {
+    override function uploadTexturePixels(t : h3d.mat.Texture, pixels : hxd.Pixels, mipLevel : Int, side : Int) {
+        // Not implemented for this minimal example
+    }
+
+    override function selectShader(shader : hxsl.RuntimeShader) : Bool {
         return false; // Not implemented for this minimal example
     }
 
@@ -115,7 +131,42 @@ class MetalDriver extends Driver {
         // Not implemented for this minimal example
     }
 
-    // Other required Driver methods would be implemented here
+    // Proper buffer allocation implementation matching Driver.hx signature
+    override function allocBuffer(b : h3d.Buffer) : GPUBuffer {
+        // Calculate total size based on buffer properties
+        var totalSize = b.getMemSize(); // Use the built-in method to get memory size
+        if (totalSize == 0) totalSize = 1024; // Minimum buffer size
+        
+        // Convert flags to integer safely
+        var flagsInt = 0;
+        // For now, just use 0 for flags since we don't need specific Metal buffer flags yet
+        
+        // Allocate native Metal buffer - using snake_case function name
+        // The native function should return a handle directly compatible with our MetalBufferHandle type
+        return MetalNative.alloc_buffer(totalSize, flagsInt);
+    }
+
+    override function disposeBuffer(b : h3d.Buffer) {
+        if (b.vbuf != null) {
+            // Pass the buffer handle directly to the dispose function
+            MetalNative.dispose_buffer(cast b.vbuf);
+        }
+    }
+
+    override function disposeTexture(t : h3d.mat.Texture) {
+        // Not implemented for this minimal example
+    }
+
+    override function present() {
+        // Not needed for this minimal example as presentation is handled in begin_render
+    }
+
+    override function resize(width : Int, height : Int) {
+        // Update the Metal layer drawable size when window is resized
+        if (initialized && window != null) {
+            // We should add a resize function to the native interface, but for now this is handled automatically
+        }
+    }
 }
 
 #else
