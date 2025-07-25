@@ -31,6 +31,11 @@ private class MetalNative {
     public static function shutdown() : Void {}
     public static function alloc_buffer(size : Int, flags : Int) : Dynamic { return null; }
     public static function dispose_buffer(buffer : Dynamic) : Void {}
+
+    // Triangle rendering functions
+    public static function create_triangle(positions : hl.Bytes, colors : hl.Bytes, vertexCount : Int) : Bool { return false; }
+    public static function render_triangle(r : Int, g : Int, b : Int, a : Int) : Bool { return false; }
+    public static function update_buffer(buffer : Dynamic, data : hl.Bytes, size : Int, offset : Int) : Bool { return false; }
 }
 
 class MetalDriver extends Driver {
@@ -153,7 +158,7 @@ class MetalDriver extends Driver {
 //            Sys.println('[Metal] Rendering with color R:${currentClearColor.r} G:${currentClearColor.g} B:${currentClearColor.b} A:${currentClearColor.a}');
             
             // Use the stored clear color for rendering
-            MetalNative.begin_render(currentClearColor place.r, currentClearColor.g, currentClearColor.b, currentClearColor.a);
+            MetalNative.begin_render(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a);
         } else {
             // Fallback to red if no color is set
             Sys.println('[Metal] No clear color set, using red fallback');
@@ -165,6 +170,54 @@ class MetalDriver extends Driver {
         // Update the Metal layer drawable size when window is resized
         if (initialized && window != null) {
             // We should add a resize function to the native interface, but for now this is handled automatically
+        }
+    }
+
+    // Triangle rendering implementation
+    public function renderTriangle(positions : Array<Float>, colors : Array<Float>) {
+        if (!initialized) return;
+
+        // Calculate total bytes needed
+        var posCount = positions.length;
+        var colCount = colors.length;
+        var posBytes = new hl.Bytes(posCount * 4); // 4 bytes per float
+        var colBytes = new hl.Bytes(colCount * 4); // 4 bytes per float
+
+        // Copy data to bytes
+        for (i in 0...posCount) {
+            posBytes.setF32(i * 4, positions[i]);
+        }
+        for (i in 0...colCount) {
+            colBytes.setF32(i * 4, colors[i]);
+        }
+
+        // Calculate vertices from positions (each vertex has 3 values: x, y, z)
+        var vertexCount = Std.int(posCount / 3);
+
+        // Create and upload the triangle data to the GPU
+        if (!MetalNative.create_triangle(posBytes, colBytes, vertexCount)) {
+            throw "Failed to create triangle in Metal";
+        }
+
+        // Issue the draw call with black background
+        MetalNative.render_triangle(0, 0, 0, 255);
+    }
+
+    public function updateTriangleBuffer(buffer : MetalBufferHandle, data : Array<Float>, offset : Int = 0) {
+        if (!initialized) return;
+
+        // Convert the data array to bytes
+        var dataBytesSize = data.length * 4; // 4 bytes per float
+        var dataBytes = new hl.Bytes(dataBytesSize);
+
+        // Set float values using setF32
+        for (i in 0...data.length) {
+            dataBytes.setF32(i * 4, data[i]);
+        }
+
+        // Update the buffer data in the GPU
+        if (!MetalNative.update_buffer(cast buffer, dataBytes, dataBytesSize, offset)) {
+            throw "Failed to update triangle buffer in Metal";
         }
     }
 }
