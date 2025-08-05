@@ -151,20 +151,14 @@ class MetalDriver extends Driver {
     }
 
     override function present() {
-//        Sys.p TVintln('[Metal] present() called');
-
-        // Only render if we have a clear color set
-        if (currentClearColor != null) {
-//            Sys.println('[Metal] Rendering with color R:${currentClearColor.r} G:${currentClearColor.g} B:${currentClearColor.b} A:${currentClearColor.a}');
-            
-            // Use the stored clear color for rendering
-            MetalNative.begin_render(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a);
-        } else {
-            // Fallback to red if no color is set
-            Sys.println('[Metal] No clear color set, using red fallback');
-            MetalNative.begin_render(0, 0, 0, 255);
+    // Only render if we have a clear color set
+    if (currentClearColor != null) {
+        // Use the unified render function that handles both clear and triangle
+        if (!MetalNative.render_triangle(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
+            Sys.println('[Metal] WARNING: render_triangle failed in present()');
         }
     }
+}
 
     override function resize(width : Int, height : Int) {
         // Update the Metal layer drawable size when window is resized
@@ -194,13 +188,13 @@ class MetalDriver extends Driver {
         // Calculate vertices from positions (each vertex has 3 values: x, y, z)
         var vertexCount = Std.int(posCount / 3);
 
-        // Create and upload the triangle data to the GPU
+        // Create and upload the triangle data to the GPU - BUT DON'T RENDER YET
         if (!MetalNative.create_triangle(posBytes, colBytes, vertexCount)) {
             throw "Failed to create triangle in Metal";
         }
 
-        // Issue the draw call with black background
-        MetalNative.render_triangle(0, 0, 0, 255);
+        // DO NOT call render_triangle here - let present() handle the rendering
+        // This was causing the double render pass issue
     }
 
     public function updateTriangleBuffer(buffer : MetalBufferHandle, data : Array<Float>, offset : Int = 0) {
