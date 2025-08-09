@@ -44,7 +44,7 @@ private class MetalNative {
 
   public static function update_buffer(buffer:Dynamic, data:hl.Bytes, size:Int, offset:Int):Bool { return false; }
 
-  // Argument buffer functions
+  // Argument buffer functions with animation support
   public static function create_triangle_with_argbuffers(positions:hl.Bytes, colors:hl.Bytes, vertexCount:Int):Bool { return false; }
 
   public static function render_triangle_with_argbuffers(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
@@ -56,9 +56,14 @@ class MetalDriver extends Driver {
   var initialized = false;
   var currentClearColor:{r:Int, g:Int, b:Int, a:Int} = null;
 
+  // Animation state
+  var animationTime:Float = 0.0;
+  var lastFrameTime:Float = 0.0;
+
   public function new() {
     MetalNative.init();
     initialized = true;
+    lastFrameTime = haxe.Timer.stamp();
   }
 
   override function getDriverName(details:Bool) {
@@ -139,18 +144,18 @@ class MetalDriver extends Driver {
   }
 
   override function begin(frame:Int) {
-//        trace('MetalDriver.begin frame: ${frame}');
-    // Nothing special to do here for now
+    // Update animation timing
+    var currentTime = haxe.Timer.stamp();
+    var deltaTime = currentTime - lastFrameTime;
+    lastFrameTime = currentTime;
+    animationTime += deltaTime;
   }
 
   override function end() {
-//        trace('MetalDriver.end called');
     // Nothing special to do here for now
   }
 
   override function clear(?color:h3d.Vector4, ?depth:Float, ?stencil:Int) {
-//        trace('MetalDriver.clear called - color: ${color}, depth: ${depth}, stencil: ${stencil}');
-
     // If we have a color, update our current clear color
     if (color != null) {
       currentClearColor = {
@@ -162,7 +167,7 @@ class MetalDriver extends Driver {
   override function present() {
     // Only render if we have a clear color set
     if (currentClearColor != null) {
-      // Use the argument buffer render function that handles both clear and triangle
+      // Use the argument buffer render function that handles animation
       if (!MetalNative.render_triangle_with_argbuffers(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
         Sys.println('[Metal] WARNING: render_triangle_with_argbuffers failed in present()');
       }
@@ -206,7 +211,7 @@ class MetalDriver extends Driver {
     // This was causing the double render pass issue
   }
 
-  // Triangle rendering with argument buffers implementation
+  // Triangle rendering with argument buffers implementation for animation
   public function renderTriangleWithArgBuffers(positions:Array<Float>, colors:Array<Float>) {
     if (!initialized) return;
 
@@ -232,6 +237,7 @@ class MetalDriver extends Driver {
     var vertexCount = Std.int(posCount / 3);
 
     // Create and upload the triangle data using argument buffers
+    // The native implementation now handles animation automatically
     if (!MetalNative.create_triangle_with_argbuffers(posBytes, colBytes, vertexCount)) {
       throw "Failed to create triangle with argument buffers in Metal";
     }
@@ -253,6 +259,16 @@ class MetalDriver extends Driver {
     if (!MetalNative.update_buffer(cast buffer, dataBytes, dataBytesSize, offset)) {
       throw "Failed to update triangle buffer in Metal";
     }
+  }
+
+  // Get current animation time for use in applications that need it
+  public function getAnimationTime():Float {
+    return animationTime;
+  }
+
+  // Get current animation angle (for compatibility with Test03Animation)
+  public function getAnimationAngle():Float {
+    return animationTime * 0.6; // Roughly equivalent to 0.01f increment per frame at 60fps
   }
 }
 
