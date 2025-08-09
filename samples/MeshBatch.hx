@@ -71,7 +71,7 @@ class MeshBatch extends hxd.App {
 			batch.y = m.y;
 			batch.setScale(m.scale);
 			batch.setRotation(0,0,m.rot);
-			shader.color.load(m.color.toVector());
+			shader.color.load(m.color.toVector4());
 			batch.emitInstance();
 		}
 	}
