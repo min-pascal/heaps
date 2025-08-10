@@ -26,15 +26,10 @@ abstract MetalBufferHandle(Dynamic) {
 @:hlNative("metal")
 private class MetalNative {
   public static function init():Void {}
-
   public static function setup_window(win:Dynamic):Bool { return false; }
-
   public static function begin_render(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
-
   public static function shutdown():Void {}
-
   public static function alloc_buffer(size:Int, flags:Int):Dynamic { return null; }
-
   public static function dispose_buffer(buffer:Dynamic):Void {}
 
   // Triangle rendering functions
@@ -48,6 +43,9 @@ private class MetalNative {
   public static function create_triangle_with_argbuffers(positions:hl.Bytes, colors:hl.Bytes, vertexCount:Int):Bool { return false; }
 
   public static function render_triangle_with_argbuffers(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
+
+  public static function create_instanced_rectangles():Bool { return false; }
+  public static function render_instanced_rectangles(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
 }
 
 class MetalDriver extends Driver {
@@ -59,6 +57,8 @@ class MetalDriver extends Driver {
   // Animation state
   var animationTime:Float = 0.0;
   var lastFrameTime:Float = 0.0;
+
+  var instancingEnabled = false;
 
   public function new() {
     MetalNative.init();
@@ -167,9 +167,17 @@ class MetalDriver extends Driver {
   override function present() {
     // Only render if we have a clear color set
     if (currentClearColor != null) {
-      // Use the argument buffer render function that handles animation
-      if (!MetalNative.render_triangle_with_argbuffers(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
-        Sys.println('[Metal] WARNING: render_triangle_with_argbuffers failed in present()');
+      // Choose rendering method based on whether instancing is enabled
+      if (instancingEnabled) {
+        // Use instanced rectangles rendering
+        if (!MetalNative.render_instanced_rectangles(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
+          Sys.println('[Metal] WARNING: render_instanced_rectangles failed in present()');
+        }
+      } else {
+        // Use the original triangle rendering for backward compatibility
+        if (!MetalNative.render_triangle_with_argbuffers(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
+          Sys.println('[Metal] WARNING: render_triangle_with_argbuffers failed in present()');
+        }
       }
     }
   }
@@ -269,6 +277,18 @@ class MetalDriver extends Driver {
   // Get current animation angle (for compatibility with Test03Animation)
   public function getAnimationAngle():Float {
     return animationTime * 0.6; // Roughly equivalent to 0.01f increment per frame at 60fps
+  }
+
+  public function createInstancedRectangles() {
+    if (!initialized) return;
+
+    if (!MetalNative.create_instanced_rectangles()) {
+      throw "Failed to create instanced rectangles in Metal";
+    }
+    
+    // Enable instancing mode
+    instancingEnabled = true;
+    trace("Instancing enabled - present() will now render instanced rectangles");
   }
 }
 
