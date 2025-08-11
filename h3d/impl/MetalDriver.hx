@@ -46,6 +46,10 @@ private class MetalNative {
 
   public static function create_instanced_rectangles():Bool { return false; }
   public static function render_instanced_rectangles(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
+  
+  // Perspective cube functions
+  public static function create_perspective_cubes():Bool { return false; }
+  public static function render_perspective_cubes(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
 }
 
 class MetalDriver extends Driver {
@@ -59,6 +63,7 @@ class MetalDriver extends Driver {
   var lastFrameTime:Float = 0.0;
 
   var instancingEnabled = false;
+  var perspectiveEnabled = false;
 
   public function new() {
     MetalNative.init();
@@ -106,12 +111,6 @@ class MetalDriver extends Driver {
 
       // Ensure alpha is 255 if not set
       if (a == 0) a = 255;
-
-      // Force bright red color for testing - ensures we can see if colors work at all
-      // This helps diagnose if it's a color extraction issue or something else
-      r = 255;
-      g = 0;
-      b = 0;
 
       // Store the clear color for later use in present()
       currentClearColor = { r: r, g: g, b: b, a: a };
@@ -167,8 +166,13 @@ class MetalDriver extends Driver {
   override function present() {
     // Only render if we have a clear color set
     if (currentClearColor != null) {
-      // Choose rendering method based on whether instancing is enabled
-      if (instancingEnabled) {
+      // Choose rendering method based on what's enabled
+      if (perspectiveEnabled) {
+        // Use perspective cubes rendering
+        if (!MetalNative.render_perspective_cubes(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
+          Sys.println('[Metal] WARNING: render_perspective_cubes failed in present()');
+        }
+      } else if (instancingEnabled) {
         // Use instanced rectangles rendering
         if (!MetalNative.render_instanced_rectangles(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
           Sys.println('[Metal] WARNING: render_instanced_rectangles failed in present()');
@@ -288,7 +292,21 @@ class MetalDriver extends Driver {
     
     // Enable instancing mode
     instancingEnabled = true;
+    perspectiveEnabled = false;
     trace("Instancing enabled - present() will now render instanced rectangles");
+  }
+
+  public function createPerspectiveCubes() {
+    if (!initialized) return;
+
+    if (!MetalNative.create_perspective_cubes()) {
+      throw "Failed to create perspective cubes in Metal";
+    }
+    
+    // Enable perspective mode
+    perspectiveEnabled = true;
+    instancingEnabled = false;
+    trace("Perspective rendering enabled - present() will now render perspective cubes");
   }
 }
 
