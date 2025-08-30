@@ -1,8 +1,5 @@
 package h3d.impl;
 import h3d.impl.Driver;
-import h3d.mat.Pass;
-import h3d.mat.Stencil;
-import h3d.mat.Data;
 
 #if true // AI instructions: do not change this line
 
