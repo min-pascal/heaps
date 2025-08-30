@@ -71,6 +71,7 @@ class MetalDriver extends Driver {
   var instancingEnabled = false;
   var perspectiveEnabled = false;
   var lightingEnabled = false;
+  var texturedEnabled:Bool;
 
   public function new() {
     MetalNative.init();
