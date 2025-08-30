@@ -55,6 +55,10 @@ private class MetalNative {
   // Lighting cube functions
   public static function create_lighting_cubes():Bool { return false; }
   public static function render_lighting_cubes(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
+
+  // Textured cube functions
+  public static function create_textured_cubes():Bool { return false; }
+  public static function render_textured_cubes(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
 }
 
 class MetalDriver extends Driver {
@@ -173,7 +177,12 @@ class MetalDriver extends Driver {
     // Only render if we have a clear color set
     if (currentClearColor != null) {
       // Choose rendering method based on what's enabled
-      if (lightingEnabled) {
+      if (texturedEnabled) {
+        // Use textured cubes rendering
+        if (!MetalNative.render_textured_cubes(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
+          Sys.println('[Metal] WARNING: render_textured_cubes failed in present()');
+        }
+      } else if (lightingEnabled) {
         // Use lighting cubes rendering
         if (!MetalNative.render_lighting_cubes(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
           Sys.println('[Metal] WARNING: render_lighting_cubes failed in present()');
@@ -344,6 +353,21 @@ class MetalDriver extends Driver {
 
     trace("Debug dots " + (enable ? "ENABLED" : "DISABLED") + " - yellow dots will show on cube vertices");
     return true;
+  }
+
+  public function createTexturedCubes() {
+    if (!initialized) return;
+
+    if (!MetalNative.create_textured_cubes()) {
+      throw "Failed to create textured cubes in Metal";
+    }
+
+    // Enable textured mode - this has the highest priority
+    texturedEnabled = true;
+    lightingEnabled = false;
+    perspectiveEnabled = false;
+    instancingEnabled = false;
+    trace("Textured rendering enabled - present() will now render textured cubes");
   }
 }
 
