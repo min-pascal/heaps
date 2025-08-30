@@ -50,6 +50,11 @@ private class MetalNative {
   // Perspective cube functions
   public static function create_perspective_cubes():Bool { return false; }
   public static function render_perspective_cubes(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
+  public static function enable_debug_dots(enable:Bool):Bool { return false; }
+
+  // Lighting cube functions
+  public static function create_lighting_cubes():Bool { return false; }
+  public static function render_lighting_cubes(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
 }
 
 class MetalDriver extends Driver {
@@ -64,6 +69,7 @@ class MetalDriver extends Driver {
 
   var instancingEnabled = false;
   var perspectiveEnabled = false;
+  var lightingEnabled = false;
 
   public function new() {
     MetalNative.init();
@@ -167,7 +173,12 @@ class MetalDriver extends Driver {
     // Only render if we have a clear color set
     if (currentClearColor != null) {
       // Choose rendering method based on what's enabled
-      if (perspectiveEnabled) {
+      if (lightingEnabled) {
+        // Use lighting cubes rendering
+        if (!MetalNative.render_lighting_cubes(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
+          Sys.println('[Metal] WARNING: render_lighting_cubes failed in present()');
+        }
+      } else if (perspectiveEnabled) {
         // Use perspective cubes rendering
         if (!MetalNative.render_perspective_cubes(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
           Sys.println('[Metal] WARNING: render_perspective_cubes failed in present()');
@@ -307,6 +318,32 @@ class MetalDriver extends Driver {
     perspectiveEnabled = true;
     instancingEnabled = false;
     trace("Perspective rendering enabled - present() will now render perspective cubes");
+  }
+
+  public function createLightingCubes() {
+    if (!initialized) return;
+
+    if (!MetalNative.create_lighting_cubes()) {
+      throw "Failed to create lighting cubes in Metal";
+    }
+
+    // Enable lighting mode
+    lightingEnabled = true;
+    perspectiveEnabled = false;
+    instancingEnabled = false;
+    trace("Lighting enabled - present() will now render lit cubes");
+  }
+
+  public function enableDebugDots(enable:Bool):Bool {
+    if (!initialized) return false;
+
+    if (!MetalNative.enable_debug_dots(enable)) {
+      trace("Failed to enable/disable debug dots in Metal");
+      return false;
+    }
+
+    trace("Debug dots " + (enable ? "ENABLED" : "DISABLED") + " - yellow dots will show on cube vertices");
+    return true;
   }
 }
 
