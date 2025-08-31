@@ -56,6 +56,11 @@ private class MetalNative {
   // Textured cube functions
   public static function create_textured_cubes():Bool { return false; }
   public static function render_textured_cubes(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
+
+  // Compute shader functions
+  public static function create_compute_cubes():Bool { return false; }
+  public static function render_compute_cubes(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
+  public static function generate_mandelbrot_texture():Bool { return false; }
 }
 
 class MetalDriver extends Driver {
@@ -71,7 +76,8 @@ class MetalDriver extends Driver {
   var instancingEnabled = false;
   var perspectiveEnabled = false;
   var lightingEnabled = false;
-  var texturedEnabled:Bool;
+  var texturedEnabled = false;
+  var computeEnabled = false;
 
   public function new() {
     MetalNative.init();
@@ -175,7 +181,12 @@ class MetalDriver extends Driver {
     // Only render if we have a clear color set
     if (currentClearColor != null) {
       // Choose rendering method based on what's enabled
-      if (texturedEnabled) {
+      if (computeEnabled) {
+        // Use compute shader cubes rendering
+        if (!MetalNative.render_compute_cubes(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
+          Sys.println('[Metal] WARNING: render_compute_cubes failed in present()');
+        }
+      } else if (texturedEnabled) {
         // Use textured cubes rendering
         if (!MetalNative.render_textured_cubes(currentClearColor.r, currentClearColor.g, currentClearColor.b, currentClearColor.a)) {
           Sys.println('[Metal] WARNING: render_textured_cubes failed in present()');
@@ -366,6 +377,34 @@ class MetalDriver extends Driver {
     perspectiveEnabled = false;
     instancingEnabled = false;
     trace("Textured rendering enabled - present() will now render textured cubes");
+  }
+
+  public function createComputeCubes() {
+    if (!initialized) return;
+
+    if (!MetalNative.create_compute_cubes()) {
+      throw "Failed to create compute cubes in Metal";
+    }
+
+    // Enable compute mode - this has the highest priority
+    computeEnabled = true;
+    texturedEnabled = false;
+    lightingEnabled = false;
+    perspectiveEnabled = false;
+    instancingEnabled = false;
+    trace("Compute shader rendering enabled - present() will now render Mandelbrot-textured cubes");
+  }
+
+  public function generateMandelbrotTexture():Bool {
+    if (!initialized) return false;
+
+    if (!MetalNative.generate_mandelbrot_texture()) {
+      trace("Failed to generate Mandelbrot texture in Metal");
+      return false;
+    }
+
+    trace("Mandelbrot texture generated successfully");
+    return true;
   }
 }
 
