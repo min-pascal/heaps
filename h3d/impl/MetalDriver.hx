@@ -61,6 +61,11 @@ private class MetalNative {
   public static function create_compute_cubes():Bool { return false; }
   public static function render_compute_cubes(r:Int, g:Int, b:Int, a:Int):Bool { return false; }
   public static function generate_mandelbrot_texture():Bool { return false; }
+
+  // Frame debugging functions
+  public static function init_frame_debugging():Bool { return false; }
+  public static function trigger_frame_capture():Bool { return false; }
+  public static function check_auto_capture():Bool { return false; }
 }
 
 class MetalDriver extends Driver {
@@ -405,6 +410,25 @@ class MetalDriver extends Driver {
 
     trace("Mandelbrot texture generated successfully");
     return true;
+  }
+
+  // Frame debugging methods
+  public function triggerFrameCapture():Bool {
+    if (!initialized) return false;
+
+    if (!MetalNative.trigger_frame_capture()) {
+      trace("Failed to trigger GPU frame capture in Metal");
+      return false;
+    }
+
+    trace("GPU frame capture triggered - next frame will be captured and opened in Xcode");
+    return true;
+  }
+
+  public function checkAutoCapture():Bool {
+    if (!initialized) return false;
+
+    return MetalNative.check_auto_capture();
   }
 }
 
