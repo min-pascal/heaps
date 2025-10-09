@@ -458,7 +458,9 @@ class Flatten {
 			type : TVec(0,t),
 			kind : kind,
 		};
-		for( v in vars ) {
+	// For Metal compatibility: align all parameters to vec4 (4-component) boundaries
+	// This ensures that vec3 parameters don't span multiple vec4 slots when accessed as float4*
+	var metalAlignedPacking = true;		for( v in vars ) {
 			if( v.type.isTexture() || v.type.match(TBuffer(_)) )
 				continue;
 			switch( v.type ) {
@@ -473,6 +475,35 @@ class Flatten {
 				varMap.set(v, a);
 				continue;
 			}
+			
+			// Metal-aligned packing: ensure each parameter starts at a vec4 boundary
+			if( metalAlignedPacking ) {
+				// Align apos to next vec4 boundary (multiple of 4)
+				if( apos % 4 != 0 ) {
+					var alignPad = 4 - (apos % 4);
+					var a = new Alloc(g, t, apos, alignPad);
+					apos += alignPad;
+					alloc.push(a);
+				}
+				
+				// Allocate at aligned position
+				var a = new Alloc(g, t, apos, size);
+				a.v = v;
+				varMap.set(v, a);
+				alloc.push(a);
+				apos += size;
+				
+				// Pad to complete the vec4 if needed
+				var pad = (4 - (size % 4)) % 4;
+				if( pad > 0 ) {
+					var a = new Alloc(g, t, apos, pad);
+					apos += pad;
+					alloc.push(a);
+				}
+				continue;
+			}
+			
+			// Original packing logic (non-Metal, kept for compatibility)
 			var best : Alloc = null;
 			for( a in alloc )
 				if( a.v == null && a.size >= size && (best == null || best.size > a.size) )
