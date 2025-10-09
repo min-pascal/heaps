@@ -8,6 +8,10 @@ typedef Query = {};
 typedef GPUBuffer = js.html.webgl.Buffer;
 typedef Texture = { t : js.html.webgl.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bias : Float, bind : Int #if multidriver, driver : Driver #end, startMip : Int };
 typedef Query = {};
+#elseif metal
+typedef GPUBuffer = Null<Int>;
+typedef Texture = { t : Int, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int, bias : Float, startMip : Int };
+typedef Query = {};
 #elseif hlsdl
 typedef GPUBuffer = sdl.GL.Buffer;
 typedef Texture = { t : sdl.GL.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int, bias : Float, startMip : Int #if multidriver, driver : Driver #end };
