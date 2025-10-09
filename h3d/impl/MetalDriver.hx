@@ -10,7 +10,12 @@ abstract MetalBufferHandle(Dynamic) {
     this = d;
   }
 
-  @:from static public inline function fromDynamic(d:Dynamic):MetalBufferHandle {
+  @:from static public inline function fromDynamic(d:override function clear(?color:h3d.Vector4, ?depth:Float, ?stencil:Int) {
+	// Clear color will be used in next render pass
+}
+
+override function present() {
+	// If we have active Metal samples, render themalBufferHandle {
     return new MetalBufferHandle(d);
   }
 
@@ -41,6 +46,7 @@ private class MetalShaderContext {
 }
 
 private class CompiledMetalShader {
+	public var id : Int; // RuntimeShader id for debugging
 	public var vertex : MetalShaderContext;
 	public var fragment : MetalShaderContext;
 	public var format : hxd.BufferFormat;
@@ -114,6 +120,7 @@ private class MetalNative {
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
 	public static function set_vertex_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
 	public static function set_fragment_texture(encoder:Dynamic, texture:Dynamic, index:Int):Void {}
+	public static function set_fragment_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
 	public static function draw_primitives(encoder:Dynamic, primitiveType:Int, vertexStart:Int, vertexCount:Int):Void {}
 	public static function draw_indexed_primitives(encoder:Dynamic, primitiveType:Int, indexCount:Int, indexBuffer:Dynamic, indexOffset:Int):Void {}
 	public static function end_encoding(encoder:Dynamic):Void {}
@@ -154,6 +161,9 @@ class MetalDriver extends Driver {
 	// Optional: Apple Metal samples integration (can be null if not needed)
   var metalSamples:MetalSamples = null;
 
+	// Dummy white texture for shaders that expect a texture but don't use one
+	var dummyWhiteTexture : Dynamic = null;
+
 	public function new() {
 		shaders = new Map();
 		shaderCompiler = new hxsl.MetalOut();
@@ -166,7 +176,24 @@ class MetalDriver extends Driver {
 			throw "Metal device not available";
 		}
 
+		// Create 1x1 white texture for solid color rendering
+		createDummyWhiteTexture();
+
 		initialized = true;
+	}
+
+	function createDummyWhiteTexture() {
+		// Create a 1x1 white texture (RGBA8 format)
+		dummyWhiteTexture = MetalNative.create_texture(1, 1, 0, 1);  // format=0 (RGBA8), usage=1 (shader read)
+		if (dummyWhiteTexture != null) {
+			// Upload white pixel data (255, 255, 255, 255)
+			var whitePixel = new hl.Bytes(4);
+			whitePixel[0] = 0xFF;  // R
+			whitePixel[1] = 0xFF;  // G
+			whitePixel[2] = 0xFF;  // B
+			whitePixel[3] = 0xFF;  // A
+			MetalNative.upload_texture_data(dummyWhiteTexture, whitePixel, 1, 1, 0);
+		}
 	}
 
 	override function getDriverName(details:Bool) {
@@ -189,6 +216,14 @@ class MetalDriver extends Driver {
 			for (shader in shaders) {
 				if (shader.pipelineState != null) {
 					MetalNative.dispose_pipeline(shader.pipelineState);
+				}
+				if (shader.vertex != null) {
+					if (shader.vertex.globals != null) MetalNative.dispose_buffer(shader.vertex.globals);
+					if (shader.vertex.params != null) MetalNative.dispose_buffer(shader.vertex.params);
+				}
+				if (shader.fragment != null) {
+					if (shader.fragment.globals != null) MetalNative.dispose_buffer(shader.fragment.globals);
+					if (shader.fragment.params != null) MetalNative.dispose_buffer(shader.fragment.params);
 				}
 			}
 			shaders.clear();
@@ -217,6 +252,39 @@ class MetalDriver extends Driver {
 	override function begin(frame:Int) {
 		this.frame = frame;
 		currentCommandBuffer = MetalNative.create_command_buffer();
+
+		// Create render encoder for the default backbuffer
+		if (currentCommandBuffer != null) {
+			var clearColor = {r: 26, g: 26, b: 26, a: 255}; // Default dark background
+			try {
+				var engine = h3d.Engine.getCurrent();
+				if (engine != null) {
+					var bgColor = engine.backgroundColor;
+					clearColor.r = (bgColor >> 16) & 0xFF;
+					clearColor.g = (bgColor >> 8) & 0xFF;
+					clearColor.b = bgColor & 0xFF;
+					clearColor.a = (bgColor >> 24) & 0xFF;
+				}
+			} catch (e:Dynamic) {
+				// Use default
+			}
+
+			currentRenderEncoder = MetalNative.begin_render_pass(
+				currentCommandBuffer,
+				clearColor.r,
+				clearColor.g,
+				clearColor.b,
+				clearColor.a
+			);
+
+			// Initialize viewport to full screen
+			if (currentRenderEncoder != null) {
+				var engine = h3d.Engine.getCurrent();
+				if (engine != null) {
+					MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast engine.width, cast engine.height);
+				}
+			}
+		}
 	}
 
 	override function end() {
@@ -257,17 +325,14 @@ class MetalDriver extends Driver {
 			}
 
 			// Render the current active sample mode
-			if (!metalSamples.renderCurrentMode(clearColor)) {
-				trace("Warning: Failed to render Metal sample mode: " + metalSamples.getCurrentModeName());
-			}
-		} else {
-			// Default Metal presentation is handled by the native layer
+			metalSamples.renderCurrentMode(clearColor);
 		}
+		// Default Metal presentation is handled by the native layer
 	}
 
 	// Buffer management following OpenGL pattern
 	override function allocBuffer(b:h3d.Buffer):GPUBuffer {
-		var size = b.vertices * b.format.stride;
+		var size = b.vertices * b.format.strideBytes;
 		var usage = getMetalBufferUsage(b);
 
 		var metalBuffer = MetalNative.create_buffer(size, usage);
@@ -360,39 +425,72 @@ class MetalDriver extends Driver {
 
 	function compileShader(shader:hxsl.RuntimeShader):CompiledMetalShader {
 		var compiled = new CompiledMetalShader();
+		compiled.id = shader.id;
 
 		// Compile vertex shader using hxsl.MetalOut
 		if (shader.vertex != null && shader.vertex.data != null) {
 			var vertexSource = shaderCompiler.run(shader.vertex.data);
+			
 			#if debug
+			// Save shader source for debugging (only in debug builds)
+			try {
+				var path = "/tmp/metal_vertex_shader_" + shader.id + ".metal";
+				sys.io.File.saveContent(path, vertexSource);
+			} catch(e:Dynamic) {}
+			
 			compiled.vertex = new MetalShaderContext(null);
 			compiled.vertex.debugSource = vertexSource;
 			#end
+			
 			var vertexShader = MetalNative.compile_shader(vertexSource, 0); // 0 = vertex
-			if (vertexShader == null) return null;
+			if (vertexShader == null) {
+				throw "Vertex shader compilation failed for shader id=" + shader.id;
+			}
 
 			compiled.vertex = new MetalShaderContext(vertexShader);
+			compiled.vertex.globalsSize = shader.vertex.globalsSize;
+			compiled.vertex.paramsSize = shader.vertex.paramsSize;
+			compiled.vertex.texturesCount = shader.vertex.texturesCount;
+			if (compiled.vertex.globalsSize > 0) compiled.vertex.globals = MetalNative.create_buffer(compiled.vertex.globalsSize << 4, 2);
+			if (compiled.vertex.paramsSize > 0) {
+				// paramsSize is in vec4 units, each vec4 = 16 bytes, so multiply by 16 (shift left 4)
+				compiled.vertex.params = MetalNative.create_buffer(compiled.vertex.paramsSize << 4, 2);
+				compiled.vertex.paramsContent = new hl.Bytes(compiled.vertex.paramsSize << 4);
+			}
 		}
 
 		// Compile fragment shader using hxsl.MetalOut
 		if (shader.fragment != null && shader.fragment.data != null) {
 			var fragmentSource = shaderCompiler.run(shader.fragment.data);
+			
 			#if debug
 			if (compiled.fragment == null) compiled.fragment = new MetalShaderContext(null);
 			compiled.fragment.debugSource = fragmentSource;
 			#end
+			
 			var fragmentShader = MetalNative.compile_shader(fragmentSource, 1); // 1 = fragment
-			if (fragmentShader == null) return null;
+			if (fragmentShader == null) {
+				throw "Fragment shader compilation failed for shader id=" + shader.id;
+			}
 
 			if (compiled.fragment == null) compiled.fragment = new MetalShaderContext(fragmentShader);
 			else compiled.fragment.shader = fragmentShader;
+			compiled.fragment.globalsSize = shader.fragment.globalsSize;
+			compiled.fragment.paramsSize = shader.fragment.paramsSize;
+			compiled.fragment.texturesCount = shader.fragment.texturesCount;
+			if (compiled.fragment.globalsSize > 0) compiled.fragment.globals = MetalNative.create_buffer(compiled.fragment.globalsSize << 4, 2);
+			if (compiled.fragment.paramsSize > 0) {
+				// paramsSize is in vec4 units, each vec4 = 16 bytes, so multiply by 16 (shift left 4)
+				compiled.fragment.params = MetalNative.create_buffer(compiled.fragment.paramsSize << 4, 2);
+				compiled.fragment.paramsContent = new hl.Bytes(compiled.fragment.paramsSize << 4);
+			}
 		}
 
 		// Create vertex descriptor and pipeline state
 		var vertexDesc = generateVertexDescriptor(shader);
 		compiled.pipelineState = MetalNative.create_render_pipeline(
-			compiled.vertex.shader,
-			compiled.fragment.shader,
+			compiled.vertex != null ? compiled.vertex.shader : null,
+			compiled.fragment != null ? compiled.fragment.shader : null,
 			vertexDesc
 		);
 
@@ -471,15 +569,291 @@ class MetalDriver extends Driver {
 			buffer.vbuf = allocBuffer(buffer);
 		}
 		currentBuffer = buffer;
+
+		// Bind the buffer to the render encoder if we have an active encoder
+		if (currentRenderEncoder != null && buffer.vbuf != null) {
+			var handle = cast(buffer.vbuf, Int);
+			var metalBuffer = bufferHandles.get(handle);
+			if (metalBuffer != null) {
+				MetalNative.set_vertex_buffer(currentRenderEncoder, metalBuffer, 0, 0);
+			}
+		}
+	}
+
+	override function uploadBufferData(b:h3d.Buffer, startVertex:Int, vertexCount:Int, buf:hxd.FloatBuffer, bufPos:Int) {
+		if (b.vbuf == null) {
+			b.vbuf = allocBuffer(b);
+		}
+
+
+	var handle = cast(b.vbuf, Int);
+	var metalBuffer = bufferHandles.get(handle);
+	if (metalBuffer == null) {
+		throw "Invalid buffer handle";
+	}
+
+	var strideBytes = b.format.strideBytes;
+	var offsetBytes = startVertex * strideBytes;
+	var sizeBytes = vertexCount * strideBytes;
+
+	// Convert FloatBuffer to hl.Bytes - use untyped access to get the underlying bytes
+	// FloatBuffer is ArrayBytes_hl_F32 which has a bytes field at runtime
+	var uploadData:hl.Bytes = untyped buf.bytes;
+	uploadData = uploadData.offset(bufPos * 4); // bufPos is in floats, 4 bytes per float
+
+	// Upload data to Metal buffer
+	if (!MetalNative.upload_buffer_data(metalBuffer, uploadData, sizeBytes, offsetBytes)) {
+		throw "Failed to upload buffer data";
+	}
+}	override function uploadBufferBytes(b:h3d.Buffer, startVertex:Int, vertexCount:Int, data:haxe.io.Bytes, dataStartBytes:Int) {
+		if (b.vbuf == null) {
+			b.vbuf = allocBuffer(b);
+		}
+
+		var handle = cast(b.vbuf, Int);
+		var metalBuffer = bufferHandles.get(handle);
+		if (metalBuffer == null) {
+			throw "Invalid buffer handle";
+		}
+
+		var stride = b.format.stride;
+		var offsetBytes = startVertex * stride;
+		var sizeBytes = vertexCount * stride;
+
+		// Convert haxe.io.Bytes to hl.Bytes
+		var hlBytes = @:privateAccess data.b;
+		var uploadData = hlBytes.offset(dataStartBytes);
+
+		// Upload data to Metal buffer
+		if (!MetalNative.upload_buffer_data(metalBuffer, uploadData, sizeBytes, offsetBytes)) {
+			throw "Failed to upload buffer data";
+		}
+	}
+
+	override function uploadIndexData(i:h3d.Buffer, startIndice:Int, indiceCount:Int, buf:hxd.IndexBuffer, bufPos:Int) {
+		if (i.vbuf == null) {
+			i.vbuf = allocBuffer(i);
+		}
+
+		var handle = cast(i.vbuf, Int);
+		var metalBuffer = bufferHandles.get(handle);
+		if (metalBuffer == null) {
+			throw "Invalid index buffer handle";
+		}
+
+		// Calculate byte offset and size based on index format
+		var bits = i.format.strideBytes >> 1; // strideBytes is 2 for 16-bit, 4 for 32-bit
+		var offsetBytes = startIndice << bits; // startIndice * strideBytes
+		var sizeBytes = indiceCount << bits; // indiceCount * strideBytes
+
+		// Convert IndexBuffer to hl.Bytes
+		var uploadData = hl.Bytes.getArray(buf.getNative()).offset(bufPos << bits);
+
+		// Upload index data to Metal buffer
+		if (!MetalNative.upload_buffer_data(metalBuffer, uploadData, sizeBytes, offsetBytes)) {
+			throw "Failed to upload index data";
+		}
 	}
 
 	override function draw(ibuf:h3d.Buffer, startIndex:Int, ntriangles:Int) {
-		// TODO: Implement Metal rendering commands
-		// This requires currentRenderEncoder to be active
+		if (currentRenderEncoder == null || currentShader == null || currentShader.pipelineState == null) {
+			return;
+		}
+
+		// Set the pipeline state
+		MetalNative.set_render_pipeline_state(currentRenderEncoder, currentShader.pipelineState);
+
+		// Bind textures - use dummy white texture if no texture is bound
+		// Fragment shaders expect a texture at index 0 for texture modulation
+		if (dummyWhiteTexture != null) {
+			MetalNative.set_fragment_texture(currentRenderEncoder, dummyWhiteTexture, 0);
+		}
+
+		// Bind uniform buffers
+		// Buffer index 0 is reserved for vertex data (via stage_in), uniforms start at index 1
+		var vertexBufferIndex = 1;  // Start at 1, skip 0 (used for vertex data)
+		if (currentShader.vertex != null) {
+			if (currentShader.vertex.globals != null) {
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, 0, vertexBufferIndex);
+				vertexBufferIndex++;
+			}
+			if (currentShader.vertex.params != null) {
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.params, 0, vertexBufferIndex);
+				vertexBufferIndex++;
+			}
+		}
+		
+		if (currentShader.fragment != null) {
+			var fragmentBufferIndex = 0;  // Fragment buffers can start at 0
+			if (currentShader.fragment.globals != null) {
+				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.globals, 0, fragmentBufferIndex);
+				fragmentBufferIndex++;
+			}
+			if (currentShader.fragment.params != null) {
+				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.params, 0, fragmentBufferIndex);
+				fragmentBufferIndex++;
+			}
+		}
+
+		// Bind current vertex buffer to index 0 (for [[stage_in]] attributes)
+		if (currentBuffer != null && currentBuffer.vbuf != null) {
+			var handle = cast(currentBuffer.vbuf, Int);
+			var metalBuffer = bufferHandles.get(handle);
+			if (metalBuffer != null) {
+				MetalNative.set_vertex_buffer(currentRenderEncoder, metalBuffer, 0, 0);
+			}
+		}
+
+		if (ibuf != null) {
+			// Indexed draw call
+			if (ibuf.vbuf == null) {
+				ibuf.vbuf = allocBuffer(ibuf);
+			}
+
+			var handle = cast(ibuf.vbuf, Int);
+			var metalIndexBuffer = bufferHandles.get(handle);
+			if (metalIndexBuffer == null) {
+				throw "Invalid index buffer handle";
+			}
+
+			var indexCount = ntriangles * 3;
+			var indexOffset = startIndex * 2; // Assuming 16-bit indices (2 bytes each)
+
+			MetalNative.draw_indexed_primitives(currentRenderEncoder, 3, indexCount, metalIndexBuffer, indexOffset);
+		} else {
+			// Non-indexed draw call
+			var vertexCount = ntriangles * 3;
+			MetalNative.draw_primitives(currentRenderEncoder, 3, startIndex, vertexCount);
+		}
 	}
 
 	override function setRenderTarget(tex:Null<h3d.mat.Texture>, layer = 0, mipLevel = 0, depthBinding:h3d.Engine.DepthBinding = ReadWrite) {
-		// TODO: Setup render pass with render targets
+		// End current render pass if active
+		if (currentRenderEncoder != null) {
+			MetalNative.end_encoding(currentRenderEncoder);
+			currentRenderEncoder = null;
+		}
+
+		// Store current render target
+		currentTargets = tex != null ? [tex] : [];
+
+		// Begin new render pass
+		if (currentCommandBuffer != null) {
+			// Get clear color from engine
+			var clearColor = {r: 0, g: 0, b: 0, a: 255};
+			try {
+				var engine = h3d.Engine.getCurrent();
+				if (engine != null) {
+					var bgColor = engine.backgroundColor;
+					clearColor.r = (bgColor >> 16) & 0xFF;
+					clearColor.g = (bgColor >> 8) & 0xFF;
+					clearColor.b = bgColor & 0xFF;
+					clearColor.a = (bgColor >> 24) & 0xFF;
+				}
+			} catch (e:Dynamic) {
+				// Use default
+			}
+
+			// Begin render pass with the drawable
+			currentRenderEncoder = MetalNative.begin_render_pass(
+				currentCommandBuffer,
+				clearColor.r,
+				clearColor.g,
+				clearColor.b,
+				clearColor.a
+			);
+
+			if (currentRenderEncoder == null) {
+				throw "Failed to create render encoder";
+			}
+		}
+	}
+
+	override function resize(width:Int, height:Int) {
+		// Metal handles resize automatically through the CAMetalLayer
+		// No additional work needed here
+	}
+
+	override function setRenderZone(x:Int, y:Int, width:Int, height:Int) {
+		if (currentRenderEncoder == null) return;
+
+		if (width < 0 || height < 0) {
+			// Reset to full viewport
+			var engine = h3d.Engine.getCurrent();
+			if (engine != null) {
+				MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast engine.width, cast engine.height);
+			}
+		} else {
+			// Set viewport
+			MetalNative.set_viewport(currentRenderEncoder, cast x, cast y, cast width, cast height);
+			// Also set scissor rect
+			MetalNative.set_scissor_rect(currentRenderEncoder, x, y, width, height);
+		}
+	}
+
+	override function selectMaterial(pass:h3d.mat.Pass) {
+		// Material/blend state changes are handled by the pass system
+		// For now, we'll handle basic blend modes through the pipeline state
+		// More complex material states can be added later
+	}
+
+	override function uploadShaderBuffers(buffers:h3d.shader.Buffers, which:h3d.shader.Buffers.BufferKind) {
+		if (currentShader == null) return;
+
+		switch (which) {
+			case Globals:
+				// Upload global uniforms to vertex and fragment shaders
+				if (currentShader.vertex != null && currentShader.vertex.globals != null && currentShader.vertex.globalsSize > 0) {
+					var data = hl.Bytes.getArray(buffers.vertex.globals.toData());
+					if (data != null) {
+						var bytes = currentShader.vertex.globalsSize << 4;  // Size in vec4s, convert to bytes (16 bytes per vec4)
+						MetalNative.upload_buffer_data(currentShader.vertex.globals, data, bytes, 0);
+					}
+				}
+				if (currentShader.fragment != null && currentShader.fragment.globals != null && currentShader.fragment.globalsSize > 0) {
+					var data = hl.Bytes.getArray(buffers.fragment.globals.toData());
+					if (data != null) {
+						var bytes = currentShader.fragment.globalsSize << 4;
+						MetalNative.upload_buffer_data(currentShader.fragment.globals, data, bytes, 0);
+					}
+				}
+
+			case Params:
+				// Upload shader parameters to vertex and fragment shaders
+				if (currentShader.vertex != null && currentShader.vertex.params != null && currentShader.vertex.paramsSize > 0) {
+					var data = hl.Bytes.getArray(buffers.vertex.params.toData());
+					if (data != null) {
+						var bytes = currentShader.vertex.paramsSize << 4;
+						MetalNative.upload_buffer_data(currentShader.vertex.params, data, bytes, 0);
+					}
+				}
+				if (currentShader.fragment != null && currentShader.fragment.params != null && currentShader.fragment.paramsSize > 0) {
+					var data = hl.Bytes.getArray(buffers.fragment.params.toData());
+					if (data != null) {
+						var bytes = currentShader.fragment.paramsSize << 4;
+						MetalNative.upload_buffer_data(currentShader.fragment.params, data, bytes, 0);
+					}
+				}
+
+			case Textures:
+				// Bind textures to fragment shader
+				if (currentRenderEncoder != null && buffers.fragment != null && buffers.fragment.tex != null) {
+					for (i in 0...buffers.fragment.tex.length) {
+						var t = buffers.fragment.tex[i];
+						if (t != null && t.t != null) {
+							var handle = cast(t.t.t, Int);
+							var metalTexture = textureHandles.get(handle);
+							if (metalTexture != null) {
+								MetalNative.set_fragment_texture(currentRenderEncoder, metalTexture, i);
+							}
+						}
+					}
+				}
+
+			case Buffers:
+				// Handle buffer bindings if needed
+				// This is for compute shaders and other advanced features
+		}
 	}
 
 	// Feature detection
@@ -507,31 +881,19 @@ class MetalDriver extends Driver {
 		};
 	}
 
-	// Stubs for remaining Driver methods
-	override function selectMaterial(pass:h3d.mat.Pass) {}
-	override function uploadShaderBuffers(buffers:h3d.shader.Buffers, which:h3d.shader.Buffers.BufferKind) {}
-	override function drawInstanced(ibuf:h3d.Buffer, commands:h3d.impl.InstanceBuffer) {}
-	override function setRenderZone(x:Int, y:Int, width:Int, height:Int) {}
-	override function resize(width:Int, height:Int) {}
-	override function selectMultiBuffers(format:hxd.BufferFormat.MultiFormat, buffers:Array<h3d.Buffer>) {}
-	override function allocQuery(queryKind:QueryKind):Query { return {}; }
-	override function deleteQuery(q:Query) {}
-	override function beginQuery(q:Query) {}
-	override function endQuery(q:Query) {}
-	override function queryResultAvailable(q:Query):Bool { return false; }
-	override function queryResult(q:Query):Int { return 0; }
+	override function setDebug(d:Bool) {
+		// Debug mode - can be implemented later for shader debugging
+	}
 
-	// Apple Metal Samples Integration (optional)
-  public function enableAppleSamples():MetalSamples {
-    if (metalSamples == null) {
-      metalSamples = new MetalSamples();
-    }
-    return metalSamples;
-  }
+	override function captureRenderBuffer(pixels:hxd.Pixels) {
+		// Capture render buffer for screenshots - not critical for basic rendering
+		// Not implemented yet
+	}
 
-  public function getAppleSamples():Null<MetalSamples> {
-    return metalSamples;
-  }
+	override function getNativeShaderCode(shader:hxsl.RuntimeShader):String {
+		// Return compiled shader code for debugging - not critical
+		return "Metal shader code";
+	}
 }
 
 #else
