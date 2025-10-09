@@ -135,12 +135,6 @@ class MetalOut {
 	}
 
 	function varName( v : TVar ) {
-		if( v.kind == Output ) {
-			if( isVertex )
-				return "output.position";
-			if( isFragment )
-				return "output.color";
-		}
 		var n = varNames.get(v.id);
 		if( n != null )
 			return n;
@@ -281,7 +275,7 @@ class MetalOut {
 			addType(t);
 			add(" *");
 			ident(v);
-			add(" [[buffer(0)]]"); // Buffer binding will need proper indexing
+			add(" [[buffer(0)]]"); // This will be handled by function parameter generation
 		default:
 			addType(v.type);
 			add(" ");
@@ -343,6 +337,8 @@ class MetalOut {
 		return switch( t ) {
 		case TSampler(_,_): true;
 		case TRWTexture(_,_,_): true;
+		case TArray(TSampler(_,_), _): true;
+		case TArray(TRWTexture(_,_,_), _): true;
 		default: false;
 		};
 	}
@@ -354,25 +350,6 @@ class MetalOut {
 			for( e in el )
 				addExpr(e, tabs + "\t");
 			add(tabs + "}");
-		case TBinop(op, e1, e2):
-			writeExpr(e1);
-			add(" ");
-			add(op);
-			add(" ");
-			writeExpr(e2);
-		case TUnop(op, e1):
-			add(op);
-			writeExpr(e1);
-		case TCall(e, el):
-			writeExpr(e);
-			add("(");
-			var first = true;
-			for( e in el ) {
-				if( !first ) add(", ");
-				first = false;
-				writeExpr(e);
-			}
-			add(")");
 		case TVarDecl(v, init):
 			add(tabs);
 			addVar(v);
@@ -410,19 +387,50 @@ class MetalOut {
 	function writeExpr( e : TExpr ) {
 		switch( e.e ) {
 		case TCall(func, args):
-			writeExpr(func);
-			add("(");
-			var first = true;
-			for( a in args ) {
-				if( !first ) add(", ");
-				first = false;
-				writeExpr(a);
+			// Special handling for texture sampling in Metal
+			switch( func.e ) {
+			case TGlobal(Texture | TextureLod):
+				// Metal texture sampling: texture.sample(sampler, coords)
+				// HXSL: texture(tex, coords) or textureLod(tex, coords, lod)
+				if( args.length >= 2 ) {
+					// args[0] should be the texture array access like fragmentTextures[0]
+					// We need to extract just the texture itself
+					writeExpr(args[0]);  // This outputs the texture
+					add(".sample(");
+					// TODO: Add sampler here - for now use default sampler
+					add("sampler(mag_filter::linear, min_filter::linear), ");
+					writeExpr(args[1]);  // UV coordinates
+					add(")");
+				} else {
+					// Fallback to standard call
+					writeExpr(func);
+					add("(");
+					var first = true;
+					for( a in args ) {
+						if( !first ) add(", ");
+						first = false;
+						writeExpr(a);
+					}
+					add(")");
+				}
+			default:
+				// Standard function call
+				writeExpr(func);
+				add("(");
+				var first = true;
+				for( a in args ) {
+					if( !first ) add(", ");
+					first = false;
+					writeExpr(a);
+				}
+				add(")");
 			}
-			add(")");
 		case TField(expr, field):
 			writeExpr(expr);
-			add(".");
-			add(field);
+			if( field != null && field.length > 0 ) {
+				add(".");
+				add(field);
+			}
 		case TVar(v):
 			ident(v);
 		case TConst(c):
@@ -437,7 +445,7 @@ class MetalOut {
 			add("(");
 			writeExpr(e1);
 			add(" ");
-			add(op);
+			add(Printer.opStr(op));
 			add(" ");
 			writeExpr(e2);
 			add(")");
@@ -456,17 +464,45 @@ class MetalOut {
 			}
 			add(" }");
 		case TArray(e, index):
-			writeExpr(e);
-			add("[");
-			writeExpr(index);
-			add("]");
+			// Check if this is a texture array access - Metal doesn't support texture arrays in shader args
+			// So we treat tex[0] as just tex (the texture is bound to texture slot 0)
+			var isTextureArrayAccess = switch( e.e ) {
+			case TVar(v): isTextureType(v.type);
+			default: false;
+			};
+			
+			if( isTextureArrayAccess && switch(index.e) { case TConst(CInt(0)): true; default: false; } ) {
+				// Skip [0] for texture variables - just output the texture name
+				writeExpr(e);
+			} else {
+				// Normal array access
+				writeExpr(e);
+				add("[");
+				writeExpr(index);
+				add("]");
+			}
 		case TSwiz(e, regs):
 			writeExpr(e);
-			add(".");
-			for( r in regs )
-				add(r.getName().substr(1).toLowerCase());
+			if( regs.length > 0 ) {
+				add(".");
+				for( r in regs )
+					add(r.getName().toLowerCase());
+			}
+		case TGlobal(g):
+			add(GLOBALS[g.getIndex()]);
+		case TParenthesis(e):
+			add("(");
+			writeExpr(e);
+			add(")");
+		case TBlock(el):
+			add("{\n");
+			for( e in el ) {
+				add("\t");
+				addExpr(e, "\t");
+			}
+			add("}");
 		default:
-			add("/* unsupported expr */");
+			add("/* unsupported expr: " + e.e.getName() + " */");
 		}
 	}
 
@@ -475,6 +511,11 @@ class MetalOut {
 		decls = [];
 		buf = new StringBuf();
 		exprValues = [];
+		
+		// Reset shader type flags
+		isVertex = false;
+		isFragment = false;
+		isCompute = false;
 
 		if( s.funs.length != 1 ) throw "assert";
 		var f = s.funs[0];
@@ -521,7 +562,34 @@ class MetalOut {
 			add("};\n\n");
 
 			// Vertex main function
-			add("vertex VertexOut vertex_main(VertexIn input [[stage_in]]) {\n");
+			add("vertex VertexOut vertex_main(VertexIn input [[stage_in]]");
+			
+			// Add uniform buffer parameters (Global and Param kinds)
+			// Buffer index 0 is reserved for vertex data (via [[stage_in]]), so uniforms start at index 1
+			var bufferIndex = 1;
+			for( v in s.vars ) {
+				if( v.kind == Global || v.kind == Param ) {
+					add(", constant ");
+					var old = v.type;
+					switch( v.type ) {
+					case TArray(t, _):
+						v.type = t;
+						addType(v.type);
+						v.type = old;
+						add(" *");
+						add(varName(v));
+						add(" [[buffer(" + bufferIndex + ")]]");
+					default:
+						addType(v.type);
+						add(" *");
+						add(varName(v));
+						add(" [[buffer(" + bufferIndex + ")]]");
+					}
+					bufferIndex++;
+				}
+			}
+			
+			add(") {\n");
 			add("\tVertexOut output;\n");
 
 			// Declare local variables for inputs
@@ -559,6 +627,17 @@ class MetalOut {
 				}
 			}
 
+			// Declare Local variables (intermediate calculations)
+			for( v in s.vars ) {
+				if( v.kind == Local ) {
+					add("\t");
+					addType(v.type);
+					add(" ");
+					add(varName(v));
+					add(";\n");
+				}
+			}
+
 			// Process shader expression
 			addExpr(f.expr, "\t");
 
@@ -584,11 +663,13 @@ class MetalOut {
 			add("}\n");
 
 		} else if( isFragment ) {
-			// Fragment input (from vertex)
+			// Fragment input (from vertex) - includes varyings (Var kind) from vertex shader
 			add("struct VertexOut {\n");
 			add("\tfloat4 position [[position]];\n");
 			for( v in s.vars ) {
-				if( v.kind == Input ) {
+				// In fragment shaders, Var kind are the varyings from vertex shader
+				// This must match the vertex shader's VertexOut struct
+				if( v.kind == Var ) {
 					add("\t");
 					addType(v.type);
 					add(" ");
@@ -598,10 +679,68 @@ class MetalOut {
 			}
 			add("};\n\n");
 
-			// Fragment main function
-			add("fragment float4 fragment_main(VertexOut input [[stage_in]]) {\n");
+			// Fragment main function - add texture and buffer parameters
+			add("fragment float4 fragment_main(VertexOut input [[stage_in]]");
+			
+			// Add texture and buffer parameters
+			var textureIndex = 0;
+			var bufferIndex = 0;
+			for( v in s.vars ) {
+				if( v.kind == Param || v.kind == Global ) {
+					add(", ");
+					if( isTextureType(v.type) ) {
+						// Textures use [[texture(n)]] attribute
+						// Metal textures are bound individually, not as arrays in shader arguments
+						// The array access in HXSL (tex[0]) maps to individual texture bindings
+						var old = v.type;
+						var baseType = switch( v.type ) {
+						case TArray(t, _): t;
+						default: v.type;
+						};
+						v.type = baseType;
+						addType(v.type);
+						v.type = old;
+						add(" ");
+						add(varName(v));
+						add(" [[texture(" + textureIndex + ")]]");
+						textureIndex++;
+					} else {
+						// Non-texture parameters use [[buffer(n)]]
+						add("constant ");
+						var old = v.type;
+						switch( v.type ) {
+						case TArray(t, _):
+							v.type = t;
+							addType(v.type);
+							v.type = old;
+							add(" *");
+						default:
+							addType(v.type);
+							add(" *");
+						}
+						add(varName(v));
+						add(" [[buffer(" + bufferIndex + ")]]");
+						bufferIndex++;
+					}
+				}
+			}
+			add(") {\n");
 
-			// Declare local variables for inputs from vertex shader
+			// Declare local variables for varyings from vertex shader
+			// Var kind in fragment = interpolated outputs from vertex shader
+			for( v in s.vars ) {
+				if( v.kind == Var ) {
+					add("\t");
+					addType(v.type);
+					add(" ");
+					add(varName(v));
+					add(" = input.");
+					add(varName(v));
+					add(";\n");
+				}
+			}
+
+			// Declare local variables for inputs from vertex shader (textures, etc)
 			for( v in s.vars ) {
 				if( v.kind == Input ) {
 					add("\t");
@@ -617,6 +756,17 @@ class MetalOut {
 			// Declare local variable for output color
 			for( v in s.vars ) {
 				if( v.kind == Output ) {
+					add("\t");
+					addType(v.type);
+					add(" ");
+					add(varName(v));
+					add(";\n");
+				}
+			}
+
+			// Declare local variables (Local kind only - intermediate calculations)
+			for( v in s.vars ) {
+				if( v.kind == Local ) {
 					add("\t");
 					addType(v.type);
 					add(" ");
@@ -649,7 +799,8 @@ class MetalOut {
 			add("}\n");
 		}
 
-		return buf.toString();
+		var source = buf.toString();
+		return source;
 	}
 
 	public static function compile( s : ShaderData ) {
