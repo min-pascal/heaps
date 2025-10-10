@@ -10,12 +10,7 @@ abstract MetalBufferHandle(Dynamic) {
     this = d;
   }
 
-  @:from static public inline function fromDynamic(d:override function clear(?color:h3d.Vector4, ?depth:Float, ?stencil:Int) {
-	// Clear color will be used in next render pass
-}
-
-override function present() {
-	// If we have active Metal samples, render themalBufferHandle {
+  @:from static public inline function fromDynamic(d:Dynamic):MetalBufferHandle {
     return new MetalBufferHandle(d);
   }
 
