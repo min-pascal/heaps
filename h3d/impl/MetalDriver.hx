@@ -29,7 +29,8 @@ private class MetalShaderContext {
 	public var bufferCount : Int;
 	public var paramsContent : hl.Bytes;
 	public var globals : Dynamic; // id<MTLBuffer>
-	public var params : Dynamic; // id<MTLBuffer>
+	public var params : Dynamic; // id<MTLBuffer> (deprecated, use paramsBuffers instead)
+	public var paramsBuffers : Array<Dynamic>; // Array of id<MTLBuffer> for triple buffering
 	public var texturesTypes : Array<hxsl.Ast.Type>;
 	#if debug
 	public var debugSource : String;
@@ -37,6 +38,7 @@ private class MetalShaderContext {
 
 	public function new(shader) {
 		this.shader = shader;
+		this.paramsBuffers = [];
 	}
 }
 
@@ -158,6 +160,14 @@ class MetalDriver extends Driver {
 
 	// Dummy white texture for shaders that expect a texture but don't use one
 	var dummyWhiteTexture : Dynamic = null;
+	
+	// Track if textures were bound in uploadShaderBuffers
+	var texturesBound : Bool = false;
+	
+	// Triple buffering for dynamic uniform buffers
+	static inline var MAX_FRAMES_IN_FLIGHT = 3;
+	var currentFrameIndex : Int = 0;
+	var drawCallIndex : Int = 0;  // Track draw calls within current frame for buffer offsets
 
 	public function new() {
 		shaders = new Map();
@@ -246,6 +256,12 @@ class MetalDriver extends Driver {
 
 	override function begin(frame:Int) {
 		this.frame = frame;
+		texturesBound = false; // Reset texture binding flag for new frame
+		
+		// Advance to next frame buffer in triple buffering rotation
+		currentFrameIndex = (currentFrameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
+		drawCallIndex = 0;  // Reset draw call counter for new frame
+		
 		currentCommandBuffer = MetalNative.create_command_buffer();
 
 		// Create render encoder for the default backbuffer
@@ -401,6 +417,38 @@ class MetalDriver extends Driver {
 		}
 	}
 
+	override function uploadTexturePixels(t:h3d.mat.Texture, pixels:hxd.Pixels, mipLevel:Int, side:Int) {
+		trace('uploadTexturePixels called: ${pixels.width}x${pixels.height}, mipLevel=$mipLevel');
+		
+		if (t.t == null) {
+			trace('Allocating texture...');
+			t.t = allocTexture(t);
+		}
+
+		var handle = cast(t.t.t, Int);
+		var metalTexture = textureHandles.get(handle);
+		if (metalTexture == null) {
+			throw "Invalid texture handle";
+		}
+
+		// Convert pixels to hl.Bytes
+		var data:hl.Bytes = @:privateAccess pixels.bytes.getData();
+		trace('Uploading texture data: handle=$handle, data=$data, size=${pixels.width}x${pixels.height}');
+		
+		// Upload texture data to Metal
+		if (!MetalNative.upload_texture_data(metalTexture, data, pixels.width, pixels.height, mipLevel)) {
+			throw "Failed to upload texture data";
+		}
+		
+		trace('Texture upload SUCCESS');
+	}
+
+	override function uploadTextureBitmap(t:h3d.mat.Texture, bmp:hxd.BitmapData, mipLevel:Int, side:Int) {
+		// Convert BitmapData to Pixels and use uploadTexturePixels
+		var pixels = bmp.getPixels();
+		uploadTexturePixels(t, pixels, mipLevel, side);
+	}
+
 	// Shader compilation following DirectX pattern with Metal integration
 	override function selectShader(shader:hxsl.RuntimeShader):Bool {
 		if (shader == null) return false;
@@ -449,8 +497,17 @@ class MetalDriver extends Driver {
 			if (compiled.vertex.globalsSize > 0) compiled.vertex.globals = MetalNative.create_buffer(compiled.vertex.globalsSize << 4, 2);
 			if (compiled.vertex.paramsSize > 0) {
 				// paramsSize is in vec4 units, each vec4 = 16 bytes, so multiply by 16 (shift left 4)
-				compiled.vertex.params = MetalNative.create_buffer(compiled.vertex.paramsSize << 4, 2);
-				compiled.vertex.paramsContent = new hl.Bytes(compiled.vertex.paramsSize << 4);
+				var singleDrawSize = compiled.vertex.paramsSize << 4;
+				// Allocate space for 256 draw calls per frame (should be enough for most scenes)
+				var bufferSize = singleDrawSize * 256;
+				// Create 3 buffers for triple buffering
+				for (i in 0...MAX_FRAMES_IN_FLIGHT) {
+					var buffer = MetalNative.create_buffer(bufferSize, 2);
+					compiled.vertex.paramsBuffers.push(buffer);
+				}
+				// Keep legacy single buffer for compatibility (uses first buffer)
+				compiled.vertex.params = compiled.vertex.paramsBuffers[0];
+				compiled.vertex.paramsContent = new hl.Bytes(singleDrawSize);
 			}
 		}
 
@@ -476,8 +533,17 @@ class MetalDriver extends Driver {
 			if (compiled.fragment.globalsSize > 0) compiled.fragment.globals = MetalNative.create_buffer(compiled.fragment.globalsSize << 4, 2);
 			if (compiled.fragment.paramsSize > 0) {
 				// paramsSize is in vec4 units, each vec4 = 16 bytes, so multiply by 16 (shift left 4)
-				compiled.fragment.params = MetalNative.create_buffer(compiled.fragment.paramsSize << 4, 2);
-				compiled.fragment.paramsContent = new hl.Bytes(compiled.fragment.paramsSize << 4);
+				var singleDrawSize = compiled.fragment.paramsSize << 4;
+				// Allocate space for 256 draw calls per frame (should be enough for most scenes)
+				var bufferSize = singleDrawSize * 256;
+				// Create 3 buffers for triple buffering
+				for (i in 0...MAX_FRAMES_IN_FLIGHT) {
+					var buffer = MetalNative.create_buffer(bufferSize, 2);
+					compiled.fragment.paramsBuffers.push(buffer);
+				}
+				// Keep legacy single buffer for compatibility (uses first buffer)
+				compiled.fragment.params = compiled.fragment.paramsBuffers[0];
+				compiled.fragment.paramsContent = new hl.Bytes(singleDrawSize);
 			}
 		}
 
@@ -658,9 +724,9 @@ class MetalDriver extends Driver {
 		// Set the pipeline state
 		MetalNative.set_render_pipeline_state(currentRenderEncoder, currentShader.pipelineState);
 
-		// Bind textures - use dummy white texture if no texture is bound
+		// Bind dummy white texture if no actual textures were bound in uploadShaderBuffers
 		// Fragment shaders expect a texture at index 0 for texture modulation
-		if (dummyWhiteTexture != null) {
+		if (!texturesBound && dummyWhiteTexture != null) {
 			MetalNative.set_fragment_texture(currentRenderEncoder, dummyWhiteTexture, 0);
 		}
 
@@ -672,8 +738,12 @@ class MetalDriver extends Driver {
 				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, 0, vertexBufferIndex);
 				vertexBufferIndex++;
 			}
-			if (currentShader.vertex.params != null) {
-				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.params, 0, vertexBufferIndex);
+			if (currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsBuffers.length > 0) {
+				// Bind the current frame's params buffer with offset for this draw call
+				var currentBuffer = currentShader.vertex.paramsBuffers[currentFrameIndex];
+				var bytes = currentShader.vertex.paramsSize << 4;
+				var offset = drawCallIndex * bytes;
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentBuffer, offset, vertexBufferIndex);
 				vertexBufferIndex++;
 			}
 		}
@@ -684,8 +754,12 @@ class MetalDriver extends Driver {
 				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.globals, 0, fragmentBufferIndex);
 				fragmentBufferIndex++;
 			}
-			if (currentShader.fragment.params != null) {
-				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.params, 0, fragmentBufferIndex);
+			if (currentShader.fragment.paramsBuffers != null && currentShader.fragment.paramsBuffers.length > 0) {
+				// Bind the current frame's params buffer with offset for this draw call
+				var currentBuffer = currentShader.fragment.paramsBuffers[currentFrameIndex];
+				var bytes = currentShader.fragment.paramsSize << 4;
+				var offset = drawCallIndex * bytes;
+				MetalNative.set_fragment_buffer(currentRenderEncoder, currentBuffer, offset, fragmentBufferIndex);
 				fragmentBufferIndex++;
 			}
 		}
@@ -720,6 +794,9 @@ class MetalDriver extends Driver {
 			var vertexCount = ntriangles * 3;
 			MetalNative.draw_primitives(currentRenderEncoder, 3, startIndex, vertexCount);
 		}
+		
+		// Increment draw call counter after each draw
+		drawCallIndex++;
 	}
 
 	override function setRenderTarget(tex:Null<h3d.mat.Texture>, layer = 0, mipLevel = 0, depthBinding:h3d.Engine.DepthBinding = ReadWrite) {
@@ -814,24 +891,31 @@ class MetalDriver extends Driver {
 				}
 
 			case Params:
-				// Upload shader parameters to vertex and fragment shaders
-				if (currentShader.vertex != null && currentShader.vertex.params != null && currentShader.vertex.paramsSize > 0) {
+				// Upload shader parameters to vertex and fragment shaders using triple buffering with per-draw-call offsets
+				if (currentShader.vertex != null && currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsSize > 0) {
 					var data = hl.Bytes.getArray(buffers.vertex.params.toData());
 					if (data != null) {
 						var bytes = currentShader.vertex.paramsSize << 4;
-						MetalNative.upload_buffer_data(currentShader.vertex.params, data, bytes, 0);
+						// Calculate offset for this draw call within the current frame's buffer
+						var offset = drawCallIndex * bytes;
+						var currentBuffer = currentShader.vertex.paramsBuffers[currentFrameIndex];
+						MetalNative.upload_buffer_data(currentBuffer, data, bytes, offset);
 					}
 				}
-				if (currentShader.fragment != null && currentShader.fragment.params != null && currentShader.fragment.paramsSize > 0) {
+				if (currentShader.fragment != null && currentShader.fragment.paramsBuffers != null && currentShader.fragment.paramsSize > 0) {
 					var data = hl.Bytes.getArray(buffers.fragment.params.toData());
 					if (data != null) {
 						var bytes = currentShader.fragment.paramsSize << 4;
-						MetalNative.upload_buffer_data(currentShader.fragment.params, data, bytes, 0);
+						// Calculate offset for this draw call within the current frame's buffer
+						var offset = drawCallIndex * bytes;
+						var currentBuffer = currentShader.fragment.paramsBuffers[currentFrameIndex];
+						MetalNative.upload_buffer_data(currentBuffer, data, bytes, offset);
 					}
 				}
 
 			case Textures:
 				// Bind textures to fragment shader
+				texturesBound = false;
 				if (currentRenderEncoder != null && buffers.fragment != null && buffers.fragment.tex != null) {
 					for (i in 0...buffers.fragment.tex.length) {
 						var t = buffers.fragment.tex[i];
@@ -840,6 +924,7 @@ class MetalDriver extends Driver {
 							var metalTexture = textureHandles.get(handle);
 							if (metalTexture != null) {
 								MetalNative.set_fragment_texture(currentRenderEncoder, metalTexture, i);
+								texturesBound = true;
 							}
 						}
 					}
