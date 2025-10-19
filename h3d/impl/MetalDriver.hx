@@ -374,6 +374,9 @@ class MetalDriver extends Driver {
 			t.t = allocTexture(t);
 		}
 
+		// Convert pixels to match texture format (CRITICAL: BitmapData uses BGRA, but textures may be RGBA)
+		pixels.convert(t.format);
+
 		var metalTexture:Dynamic = t.t.t;
 
 		// Convert pixels to hl.Bytes
@@ -381,7 +384,7 @@ class MetalDriver extends Driver {
 		
 		// Upload texture data to Metal
 		if (!MetalNative.upload_texture_data(metalTexture, data, pixels.width, pixels.height, mipLevel)) {
-			throw "Failed to upload texture data";
+			throw "Failed to upload texture pixels";
 		}
 	}
 
