@@ -80,6 +80,11 @@ private class MetalNative {
 	public static function capture_texture_pixels(texture:Dynamic, data:hl.Bytes, width:Int, height:Int, level:Int):Bool { return false; }
 	public static function dispose_texture(texture:Dynamic):Void {}
 
+	// Sampler state management
+	public static function create_sampler_state(minFilter:Int, magFilter:Int, mipFilter:Int, wrapS:Int, wrapT:Int):Dynamic { return null; }
+	public static function dispose_sampler(sampler:Dynamic):Void {}
+	public static function set_fragment_samplers(encoder:Dynamic, samplers:hl.NativeArray.NativeArray<Dynamic>):Void {}
+
 	// Shader compilation
 	public static function compile_shader(source:String, shaderType:Int):Dynamic { return null; }
 	public static function create_render_pipeline(vertexShader:Dynamic, fragmentShader:Dynamic, vertexDesc:String):Dynamic { return null; }
@@ -122,6 +127,9 @@ class MetalDriver extends Driver {
 	// Shader compilation and caching following DirectX pattern
 	var shaders : Map<Int, CompiledMetalShader>;
 	var shaderCompiler : hxsl.MetalOut;
+	
+	// Sampler state cache (similar to DirectX driver)
+	var samplerStates : Map<Int, Dynamic>;  // bits -> MTLSamplerState
 
 	// Optional: Apple Metal samples integration (can be null if not needed)
 	var metalSamples : MetalSamples = null;
@@ -140,6 +148,7 @@ class MetalDriver extends Driver {
 	public function new() {
 		shaders = new Map();
 		shaderCompiler = new hxsl.MetalOut();
+		samplerStates = new Map();
 
 		// Initialize Metal context - init() now returns void, so we check device availability instead
 		MetalNative.init();
@@ -857,15 +866,55 @@ class MetalDriver extends Driver {
 				}
 
 			case Textures:
-				// Bind textures to fragment shader
+				// Bind textures and samplers to fragment shader
 				texturesBound = false;
 				if (currentRenderEncoder != null && buffers.fragment != null && buffers.fragment.tex != null) {
-					for (i in 0...buffers.fragment.tex.length) {
-						var t = buffers.fragment.tex[i];
-						if (t != null && t.t != null) {
-							var metalTexture:Dynamic = t.t.t;
-							MetalNative.set_fragment_texture(currentRenderEncoder, metalTexture, i);
-							texturesBound = true;
+					var texCount = buffers.fragment.tex.length;
+					if (texCount > 0) {
+						// Create sampler array
+						var samplers = new hl.NativeArray<Dynamic>(texCount);
+						
+						for (i in 0...texCount) {
+							var t = buffers.fragment.tex[i];
+							if (t != null && t.t != null) {
+								// Bind texture
+								var metalTexture:Dynamic = t.t.t;
+								MetalNative.set_fragment_texture(currentRenderEncoder, metalTexture, i);
+								
+								// Create or get cached sampler state based on texture settings
+								var mip = Type.enumIndex(t.mipMap);
+								var filter = Type.enumIndex(t.filter);
+								var wrap = Type.enumIndex(t.wrap);
+								var bits = mip | (filter << 3) | (wrap << 6);
+								
+								var samplerState = samplerStates.get(bits);
+								if (samplerState == null) {
+									// Map Heaps filter/mip/wrap to Metal sampler parameters
+									// filter: 0=Nearest, 1=Linear
+									var minFilter = (filter == 0) ? 0 : 1;  // Nearest : Linear
+									var magFilter = (filter == 0) ? 0 : 1;  // Nearest : Linear
+									
+									// mipMap: 0=None, 1=Nearest, 2=Linear
+									var mipFilter = mip;  // Direct mapping
+									
+									// wrap: 0=Clamp, 1=Repeat, 2=Mirror
+									var wrapS = (wrap == 1) ? 1 : 0;  // Repeat : Clamp (Mirror not supported yet)
+									var wrapT = wrapS;
+									
+									samplerState = MetalNative.create_sampler_state(minFilter, magFilter, mipFilter, wrapS, wrapT);
+									if (samplerState != null) {
+										samplerStates.set(bits, samplerState);
+									}
+								}
+								
+								samplers[i] = samplerState;
+								texturesBound = true;
+							}
+						}
+						
+						// Bind all samplers at once
+						if (texturesBound) {
+							MetalNative.set_fragment_samplers(currentRenderEncoder, samplers);
 						}
 					}
 				}

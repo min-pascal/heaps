@@ -397,8 +397,17 @@ class MetalOut {
 					// We need to extract just the texture itself
 					writeExpr(args[0]);  // This outputs the texture
 					add(".sample(");
-					// TODO: Add sampler here - for now use default sampler
-					add("sampler(mag_filter::linear, min_filter::linear), ");
+					// Use sampler from the same index as the texture
+					// The driver will bind appropriate samplers based on texture settings
+					add("fragmentSamplers[");
+					// Extract texture index - simplified for now, assumes fragmentTextures[N]
+					switch(args[0].e) {
+					case TArray(_, { e: TConst(CInt(idx)) }):
+						add(Std.string(idx));
+					default:
+						add("0");  // Fallback to sampler 0
+					}
+					add("], ");
 					writeExpr(args[1]);  // UV coordinates
 					add(")");
 				} else {
@@ -685,10 +694,13 @@ class MetalOut {
 			// Add texture and buffer parameters
 			var textureIndex = 0;
 			var bufferIndex = 0;
+			var samplerIndex = 0;
+			
+			// First pass: add textures
 			for( v in s.vars ) {
 				if( v.kind == Param || v.kind == Global ) {
-					add(", ");
 					if( isTextureType(v.type) ) {
+						add(", ");
 						// Textures use [[texture(n)]] attribute
 						// Metal textures are bound individually, not as arrays in shader arguments
 						// The array access in HXSL (tex[0]) maps to individual texture bindings
@@ -704,7 +716,20 @@ class MetalOut {
 						add(varName(v));
 						add(" [[texture(" + textureIndex + ")]]");
 						textureIndex++;
-					} else {
+					}
+				}
+			}
+			
+			// Second pass: add samplers (one per texture)
+			if( textureIndex > 0 ) {
+				add(", array<sampler, " + textureIndex + "> fragmentSamplers [[sampler(0)]]");
+			}
+			
+			// Third pass: add non-texture buffers
+			for( v in s.vars ) {
+				if( v.kind == Param || v.kind == Global ) {
+					if( !isTextureType(v.type) ) {
+						add(", ");
 						// Non-texture parameters use [[buffer(n)]]
 						add("constant ");
 						var old = v.type;
