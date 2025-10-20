@@ -422,6 +422,72 @@ class MetalOut {
 					}
 					add(")");
 				}
+			case TGlobal(Mat3):
+				// Special handling for float3x3 constructor
+				// Check if we're constructing from a float4x4 - need to extract 3x3 submatrix
+				if( args.length == 1 ) {
+					var argType = args[0].t;
+					var needsExtraction = switch( argType ) {
+					case TMat4: true;
+					default: false;
+					};
+					
+					if( needsExtraction ) {
+						// Extract upper-left 3x3 from 4x4 matrix
+						// float3x3(mat[0].xyz, mat[1].xyz, mat[2].xyz)
+						add("float3x3(");
+						add("float3(");
+						writeExpr(args[0]);
+						add("[0].xyz), float3(");
+						writeExpr(args[0]);
+						add("[1].xyz), float3(");
+						writeExpr(args[0]);
+						add("[2].xyz))");
+					} else {
+						// Standard constructor
+						add("float3x3(");
+						var first = true;
+						for( a in args ) {
+							if( !first ) add(", ");
+							first = false;
+							writeExpr(a);
+						}
+						add(")");
+					}
+				} else {
+					// Multiple arguments - standard constructor
+					add("float3x3(");
+					var first = true;
+					for( a in args ) {
+						if( !first ) add(", ");
+						first = false;
+						writeExpr(a);
+					}
+					add(")");
+				}
+			case TGlobal(Mat3x4):
+				// Special handling for _mat3x4 constructor (struct, not native matrix)
+				decl(MAT34);
+				if( args.length == 3 ) {
+					// Constructor from 3 float4 vectors (rows)
+					add("(_mat3x4){ ");
+					writeExpr(args[0]);
+					add(", ");
+					writeExpr(args[1]);
+					add(", ");
+					writeExpr(args[2]);
+					add(" }");
+				} else {
+					// Fallback to struct literal syntax
+					add("(_mat3x4){ ");
+					var first = true;
+					for( a in args ) {
+						if( !first ) add(", ");
+						first = false;
+						writeExpr(a);
+					}
+					add(" }");
+				}
 			default:
 				// Standard function call
 				writeExpr(func);
@@ -444,22 +510,119 @@ class MetalOut {
 			ident(v);
 		case TConst(c):
 			switch( c ) {
-			case CInt(i): add(i);
-			case CFloat(f): add(f);
+			case CInt(i):
+				// In Metal, integer literals can be ambiguous in overloaded function calls
+				// Check if this appears in a float context by looking at expression type
+				var needsFloatSuffix = switch( e.t ) {
+				case TFloat, TVec(_, VFloat): true;
+				default: false;
+				};
+				if( needsFloatSuffix && (i == 0 || i == 1) ) {
+					add(i + ".0");
+				} else {
+					add(i);
+				}
+			case CFloat(f):
+				var str = "" + f;
+				add(str);
+				// Ensure float literals always have decimal point for Metal
+				if( str.indexOf(".") == -1 && str.indexOf("e") == -1 )
+					add(".");
 			case CBool(b): add(b ? "true" : "false");
 			case CNull: add("0");
 			case CString(s): add('"' + s + '"');
 			}
 		case TBinop(op, e1, e2):
-			add("(");
-			writeExpr(e1);
-			add(" ");
-			add(Printer.opStr(op));
-			add(" ");
-			writeExpr(e2);
-			add(")");
+			// Special handling for vector * matrix operations in Metal
+			// where HXSL semantics differ from Metal's
+			if( op == OpMult ) {
+				// Check for vector * matrix multiplication
+				// HXSL uses: vec * mat (row-major semantics)
+				// Metal uses: mat * vec (column-major semantics)
+				// 
+				// Heaps stores matrices in row-major memory layout.
+				// Metal interprets buffer data as column-major, so uploaded matrix
+				// data is implicitly transposed: M_metal = transpose(M_heaps)
+				//
+				// To compute vec * M_heaps in Metal:
+				// vec * M_heaps = transpose(transpose(M_heaps) * transpose(vec))
+				// Since M_metal = transpose(M_heaps):
+				// vec * M_heaps = transpose(M_metal * transpose(vec))
+				// But transpose(vec) for column vector doesn't change it.
+				// So: vec * M_heaps = transpose(M_metal) * vec
+				
+				var isVec = switch(e1.t) { case TVec(_, VFloat): true; default: false; };
+				var isMat4 = switch(e2.t) { case TMat4: true; default: false; };
+				
+				if( isVec && isMat4 ) {
+					// vec * mat4: Keep the original HXSL operation
+					// Metal should support vec * mat just like GLSL does
+					add("(");
+					writeExpr(e1);
+					add(" * ");
+					writeExpr(e2);
+					add(")");
+				} else {
+					// Check for vec3 * mat3x4 case
+					// In HXSL: vec3 * mat3x4 = vec3
+					// _mat3x4 is a struct { float4 a; float4 b; float4 c; }
+					// vec3 * _mat3x4 = float3(dot(vec, a.xyz), dot(vec, b.xyz), dot(vec, c.xyz)) + vec.x * float3(a.w, b.w, c.w)
+					var isVec3 = switch(e1.t) { case TVec(3, VFloat): true; default: false; };
+					var isMat3x4 = switch(e2.t) { case TMat3x4: true; default: false; };
+
+					if( isVec3 && isMat3x4 ) {
+						// Manual multiplication: vec3 * mat3x4
+						// Result = (vec.x * row0.xyz + vec.y * row1.xyz + vec.z * row2.xyz) + (vec.x * row0.w + vec.y * row1.w + vec.z * row2.w) * float3(1,1,1)
+						// Simplified: float3(dot(vec, row0.xyz), dot(vec, row1.xyz), dot(vec, row2.xyz)) + float3(vec.x*row0.w, vec.y*row1.w, vec.z*row2.w)
+						// Even simpler for affine: multiply by 3x3 part, then add translation scaled by 1
+						add("(float3(dot(");
+						writeExpr(e1);
+						add(", (");
+						writeExpr(e2);
+						add(").a.xyz), dot(");
+						writeExpr(e1);
+						add(", (");
+						writeExpr(e2);
+						add(").b.xyz), dot(");
+						writeExpr(e1);
+						add(", (");
+						writeExpr(e2);
+						add(").c.xyz)) + float3((");
+						writeExpr(e2);
+						add(").a.w, (");
+						writeExpr(e2);
+						add(").b.w, (");
+						writeExpr(e2);
+						add(").c.w))");
+					} else {
+						add("(");
+						writeExpr(e1);
+						add(" ");
+						add(Printer.opStr(op));
+						add(" ");
+						writeExpr(e2);
+						add(")");
+					}
+				}
+			} else {
+				add("(");
+				writeExpr(e1);
+				add(" ");
+				add(Printer.opStr(op));
+				add(" ");
+				writeExpr(e2);
+				add(")");
+			}
 		case TUnop(op, e1):
-			add(op);
+			var opStr = switch( op ) {
+			case OpNot: "!";
+			case OpNeg: "-";
+			case OpNegBits: "~";
+			case OpIncrement: "++";
+			case OpDecrement: "--";
+			default: ""; // OpSpread not used in shaders
+			};
+			add(opStr);
 			add("(");
 			writeExpr(e1);
 			add(")");
@@ -504,12 +667,19 @@ class MetalOut {
 			writeExpr(e);
 			add(")");
 		case TBlock(el):
-			add("{\n");
-			for( e in el ) {
+			// Block expressions in Metal need statement-expression syntax: ({ stmts; value; })
+			add("({\n");
+			for( i in 0...el.length ) {
 				add("\t");
-				addExpr(e, "\t");
+				if( i == el.length - 1 ) {
+					// Last expression is the return value
+					writeExpr(el[i]);
+					add(";\n");
+				} else {
+					addExpr(el[i], "\t");
+				}
 			}
-			add("}");
+			add("})");
 		default:
 			add("/* unsupported expr: " + e.e.getName() + " */");
 		}
