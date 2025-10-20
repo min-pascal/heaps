@@ -47,11 +47,15 @@ private class CompiledMetalShader {
 	public var vertex : MetalShaderContext;
 	public var fragment : MetalShaderContext;
 	public var format : hxd.BufferFormat;
-	public var pipelineState : Dynamic; // id<MTLRenderPipelineState>
+	public var pipelineState : Dynamic; // id<MTLRenderPipelineState> - DEPRECATED, use pipelineCache
 	public var vertexDescriptor : Dynamic; // MTLVertexDescriptor
 	public var pipelineKey : String;
+	
+	// Cache of pipeline states per buffer format stride
+	public var pipelineCache : Map<Int, Dynamic>; // stride -> pipelineState
 
 	public function new() {
+		pipelineCache = new Map();
 	}
 }
 
@@ -127,6 +131,7 @@ class MetalDriver extends Driver {
 	// Shader compilation and caching following DirectX pattern
 	var shaders : Map<Int, CompiledMetalShader>;
 	var shaderCompiler : hxsl.MetalOut;
+	var currentRuntimeShader : hxsl.RuntimeShader;  // Keep reference to current runtime shader
 	
 	// Sampler state cache (similar to DirectX driver)
 	var samplerStates : Map<Int, Dynamic>;  // bits -> MTLSamplerState
@@ -428,6 +433,7 @@ class MetalDriver extends Driver {
 		}
 
 		currentShader = compiledShader;
+		currentRuntimeShader = shader;
 		return true;
 	}
 
@@ -512,16 +518,7 @@ class MetalDriver extends Driver {
 			}
 		}
 
-		// Create vertex descriptor and pipeline state
-		var vertexDesc = generateVertexDescriptor(shader);
-		compiled.pipelineState = MetalNative.create_render_pipeline(
-			compiled.vertex != null ? compiled.vertex.shader : null,
-			compiled.fragment != null ? compiled.fragment.shader : null,
-			vertexDesc
-		);
-
-		if (compiled.pipelineState == null) return null;
-
+		// Don't create pipeline here - it will be created lazily in draw() when we know the buffer format
 		return compiled;
 	}
 
@@ -565,7 +562,7 @@ class MetalDriver extends Driver {
 		};
 	}
 
-	function generateVertexDescriptor(shader:hxsl.RuntimeShader):String {
+	function generateVertexDescriptor(shader:hxsl.RuntimeShader, ?bufferFormat:hxd.BufferFormat):String {
 		// Generate Metal vertex descriptor from shader inputs
 		if (shader.vertex != null && shader.vertex.data != null) {
 			var inputs = [];
@@ -574,9 +571,37 @@ class MetalDriver extends Driver {
 					inputs.push('${v.name}:${getMetalVertexType(v.type)}');
 				}
 			}
-			return inputs.join(',');
+			var desc = inputs.join(',');
+			// Append stride if we have buffer format, so Metal uses the correct stride
+			if (bufferFormat != null) {
+				desc += '|stride:' + bufferFormat.strideBytes;
+			}
+			return desc;
 		}
 		return "";
+	}
+	
+	function getOrCreatePipeline(compiledShader:CompiledMetalShader, shader:hxsl.RuntimeShader, bufferStride:Int):Dynamic {
+		// Check if we have a cached pipeline for this stride
+		var pipeline = compiledShader.pipelineCache.get(bufferStride);
+		if (pipeline != null) return pipeline;
+		
+		// Create new pipeline with correct stride
+		var vertexDesc = generateVertexDescriptor(shader);
+		// Append stride to descriptor
+		vertexDesc += '|stride:' + bufferStride;
+		
+		pipeline = MetalNative.create_render_pipeline(
+			compiledShader.vertex != null ? compiledShader.vertex.shader : null,
+			compiledShader.fragment != null ? compiledShader.fragment.shader : null,
+			vertexDesc
+		);
+		
+		if (pipeline != null) {
+			compiledShader.pipelineCache.set(bufferStride, pipeline);
+		}
+		
+		return pipeline;
 	}
 
 	function getMetalVertexType(t:hxsl.Ast.Type):String {
@@ -659,12 +684,18 @@ class MetalDriver extends Driver {
 	}
 
 	override function draw(ibuf:h3d.Buffer, startIndex:Int, ntriangles:Int) {
-		if (currentRenderEncoder == null || currentShader == null || currentShader.pipelineState == null) {
+		if (currentRenderEncoder == null || currentShader == null || currentBuffer == null || currentRuntimeShader == null) {
+			return;
+		}
+
+		// Get or create pipeline for current buffer format
+		var pipeline = getOrCreatePipeline(currentShader, currentRuntimeShader, currentBuffer.format.strideBytes);
+		if (pipeline == null) {
 			return;
 		}
 
 		// Set the pipeline state
-		MetalNative.set_render_pipeline_state(currentRenderEncoder, currentShader.pipelineState);
+		MetalNative.set_render_pipeline_state(currentRenderEncoder, pipeline);
 
 		// Bind dummy white texture if no actual textures were bound in uploadShaderBuffers
 		// Fragment shaders expect a texture at index 0 for texture modulation
