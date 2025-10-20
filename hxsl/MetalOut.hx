@@ -824,8 +824,24 @@ class MetalOut {
 			add("}\n");
 		}
 
-		var source = buf.toString();
-		return source;
+		// Build final source with declarations inserted after includes
+		var mainSource = buf.toString();
+		var headerEnd = mainSource.indexOf("using namespace metal;\n\n");
+		if( headerEnd >= 0 ) {
+			headerEnd += "using namespace metal;\n\n".length;
+			var finalSource = mainSource.substring(0, headerEnd);
+
+			// Add declarations (like _mat3x4 typedef)
+			if( decls.length > 0 ) {
+				finalSource += decls.join("\n") + "\n\n";
+			}
+
+			finalSource += mainSource.substring(headerEnd);
+			return finalSource;
+		} else {
+			// Fallback if header pattern not found
+			return mainSource;
+		}
 	}
 
 	public static function compile( s : ShaderData ) {
