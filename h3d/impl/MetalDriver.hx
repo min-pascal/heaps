@@ -99,6 +99,8 @@ private class MetalNative {
 	public static function resume_render_pass(cmdBuffer:Dynamic):Dynamic { return null; }
 	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
+	public static function set_depth_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool):Void {}
+	public static function set_cull_mode(encoder:Dynamic, cullMode:Int):Void {}
 	public static function set_vertex_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
 	public static function set_fragment_texture(encoder:Dynamic, texture:Dynamic, index:Int):Void {}
 	public static function set_fragment_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
@@ -868,9 +870,22 @@ class MetalDriver extends Driver {
 	}
 
 	override function selectMaterial(pass:h3d.mat.Pass) {
-		// Material/blend state changes are handled by the pass system
-		// For now, we'll handle basic blend modes through the pipeline state
-		// More complex material states can be added later
+		// Set depth testing state based on material pass settings
+		if (currentRenderEncoder != null) {
+			var depthTest = pass.depthTest != Always; // If not Always, we want depth testing
+			var depthWrite = pass.depthWrite;
+			MetalNative.set_depth_state(currentRenderEncoder, depthTest, depthWrite);
+			
+			// Set culling mode
+			// Metal cullMode: 0 = None, 1 = Front, 2 = Back
+			var cullMode = switch(pass.culling) {
+				case None: 0;
+				case Front: 1;
+				case Back: 2;
+				case Both: 0; // Metal doesn't support Both, treat as None for now (will cull nothing)
+			}
+			MetalNative.set_cull_mode(currentRenderEncoder, cullMode);
+		}
 	}
 
 	override function uploadShaderBuffers(buffers:h3d.shader.Buffers, which:h3d.shader.Buffers.BufferKind) {
