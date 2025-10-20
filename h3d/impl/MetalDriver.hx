@@ -101,6 +101,7 @@ private class MetalNative {
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
 	public static function set_depth_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool):Void {}
 	public static function set_cull_mode(encoder:Dynamic, cullMode:Int):Void {}
+	public static function set_triangle_fill_mode(encoder:Dynamic, wireframe:Bool):Void {}
 	public static function set_vertex_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
 	public static function set_fragment_texture(encoder:Dynamic, texture:Dynamic, index:Int):Void {}
 	public static function set_fragment_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
@@ -885,6 +886,9 @@ class MetalDriver extends Driver {
 				case Both: 0; // Metal doesn't support Both, treat as None for now (will cull nothing)
 			}
 			MetalNative.set_cull_mode(currentRenderEncoder, cullMode);
+			
+			// Set wireframe mode
+			MetalNative.set_triangle_fill_mode(currentRenderEncoder, pass.wireframe);
 		}
 	}
 
@@ -1004,6 +1008,7 @@ class MetalDriver extends Driver {
 			case ShaderModel3: true;
 			case BottomLeftCoords: false; // Metal uses top-left
 			case InstancedRendering: true;
+			case Wireframe: true;
 			default: false;
 		};
 	}
