@@ -296,6 +296,10 @@ class MetalDriver extends Driver {
 	}
 
 	override function clear(?color:h3d.Vector4, ?depth:Float, ?stencil:Int) {
+		// Mark current target as cleared (matching OpenGL behavior)
+		if (currentTargets.length > 0 && currentTargets[0] != null) {
+			currentTargets[0].flags.set(WasCleared);
+		}
 		// Clear color will be used in next render pass
 	}
 
@@ -357,6 +361,10 @@ class MetalDriver extends Driver {
 			throw "Failed to allocate Metal texture " + t.width + "x" + t.height;
 		}
 
+		// Match OpenGL behavior: unset WasCleared flag on allocation
+		// This ensures the texture will be cleared on first use as a render target
+		t.flags.unset(WasCleared);
+
 		return {
 			t: cast metalTexture, // Return the native texture handle directly
 			width: t.width,
@@ -395,6 +403,9 @@ class MetalDriver extends Driver {
 		if (!MetalNative.upload_texture_data(metalTexture, data, pixels.width, pixels.height, mipLevel)) {
 			throw "Failed to upload texture pixels";
 		}
+		
+		// Uploading pixels means texture has content, so mark as cleared (matching OpenGL behavior)
+		t.flags.set(WasCleared);
 	}
 
 	override function uploadTextureBitmap(t:h3d.mat.Texture, bmp:hxd.BitmapData, mipLevel:Int, side:Int) {
@@ -749,11 +760,12 @@ class MetalDriver extends Driver {
 
 		// Begin new render pass
 		if (currentCommandBuffer != null) {
-			// Get clear color from engine
+			// Get clear color from engine (for backbuffer clearing)
 			var clearColor = {r: 0, g: 0, b: 0, a: 255};
+			
 			try {
 				var engine = h3d.Engine.getCurrent();
-				if (engine != null) {
+				if (engine != null && engine.backgroundColor != null) {
 					var bgColor = engine.backgroundColor;
 					clearColor.r = (bgColor >> 16) & 0xFF;
 					clearColor.g = (bgColor >> 8) & 0xFF;
@@ -765,8 +777,7 @@ class MetalDriver extends Driver {
 			}
 
 			if (tex == null) {
-				// Rendering to backbuffer - use begin_render_pass (gets drawable)
-				// Note: Don't set renderedToBackbuffer here - only set it when we actually draw to backbuffer
+				// Rendering to backbuffer - always clear with backgroundColor
 				currentRenderEncoder = MetalNative.begin_render_pass(
 					currentCommandBuffer,
 					clearColor.r,
@@ -775,16 +786,26 @@ class MetalDriver extends Driver {
 					clearColor.a
 				);
 			} else {
-				// Rendering to texture - use begin_texture_render_pass (no drawable)
+				// Rendering to texture - match OpenGL/DirectX behavior:
+				// Clear to black (0,0,0,0) on first use only, then preserve content
 				var metalTexture:Dynamic = tex.t.t;
-				currentRenderEncoder = MetalNative.begin_texture_render_pass(
-					currentCommandBuffer,
-					metalTexture,
-					clearColor.r,
-					clearColor.g,
-					clearColor.b,
-					clearColor.a
-				);
+				
+				if (!tex.flags.has(WasCleared)) {
+					// First time rendering to this texture - clear to black
+					tex.flags.set(WasCleared);
+					currentRenderEncoder = MetalNative.begin_texture_render_pass(
+						currentCommandBuffer,
+						metalTexture,
+						0, 0, 0, 0  // Clear to black (RGBA = 0,0,0,0)
+					);
+				} else {
+					// Subsequent renders - preserve existing content (Load action)
+					currentRenderEncoder = MetalNative.begin_texture_render_pass(
+						currentCommandBuffer,
+						metalTexture,
+						0, 0, 0, -1  // Negative alpha signals MTLLoadActionLoad
+					);
+				}
 			}
 
 			if (currentRenderEncoder == null) {
