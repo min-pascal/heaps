@@ -25,9 +25,9 @@ class PbrMaterialSetup extends MaterialSetup {
 		return @:privateAccess new PbrMaterial();
 	}
 
-	#if hide
-	public function createModelLibShader() {
-		return new hrt.prefab.l3d.ModelLibrary.ModelLibShader();
+	#if (hide && (sys || nodejs))
+	public function createAtlasShader() {
+		return new hrt.prefab.l3d.modellibrary.AtlasShader();
 	}
 	#end
 

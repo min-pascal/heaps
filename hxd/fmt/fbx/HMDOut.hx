@@ -1345,7 +1345,7 @@ class HMDOut extends BaseLibrary {
 				model.props.push(HasLod);
 			} else if ( lodsDecimation != null && model.skin == null ) {
 				var modelName = model.name;
-				model.name = modelName + "LOD0";
+				model.name = model.toLODName(0);
 				if( model.props == null ) model.props = [];
 				model.props.push(HasLod);
 				model.lods = [];
@@ -1354,8 +1354,13 @@ class HMDOut extends BaseLibrary {
 					if ( geom == null )
 						continue;
 					var lodModel = new Model();
-					lodModel.name = modelName + 'LOD${i}';
-					lodModel.props = model.props;
+					lodModel.name = modelName + 'LOD${i+1}';
+					lodModel.props = model.props != null ? model.props.copy() : null;
+					if ( lodModel.props != null ) {
+						lodModel.props.remove(HasCollider);
+						if ( lodModel.props.length == 0 )
+							lodModel.props = [];
+					}
 					lodModel.parent = model.parent;
 					lodModel.follow = model.follow;
 					lodModel.position = model.position;

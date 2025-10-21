@@ -14,3 +14,4 @@ bin
 /tools/meshtools/out
 *.exe
 /shaders
+/.idea
