@@ -78,6 +78,14 @@ class Vector4Impl /*#if apicheck implements h2d.impl.PointApi<Vector4,Matrix> #e
 		z *= f;
 	}
 
+	public inline function normalize3() {
+		var k = x * x + y * y + z * z;
+		if( k < hxd.Math.EPSILON2 ) k = 0 else k = k.invSqrt();
+		x *= k;
+		y *= k;
+		z *= k;
+	}
+
 	public inline function scale4( f : Float ) {
 		x *= f;
 		y *= f;
