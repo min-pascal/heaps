@@ -79,9 +79,10 @@ private class MetalNative {
 	public static function dispose_buffer(buffer:Dynamic):Void {}
 
 	// Texture management
-	public static function create_texture(width:Int, height:Int, format:Int, usage:Int):Dynamic { return null; }
-	public static function upload_texture_data(texture:Dynamic, data:hl.Bytes, width:Int, height:Int, level:Int):Bool { return false; }
+	public static function create_texture(width:Int, height:Int, format:Int, usage:Int, mipmapped:Bool, isCube:Bool):Dynamic { return null; }
+	public static function upload_texture_data(texture:Dynamic, data:hl.Bytes, width:Int, height:Int, level:Int, slice:Int):Bool { return false; }
 	public static function capture_texture_pixels(texture:Dynamic, data:hl.Bytes, width:Int, height:Int, level:Int):Bool { return false; }
+	public static function generate_mipmaps(texture:Dynamic):Void {}
 	public static function dispose_texture(texture:Dynamic):Void {}
 
 	// Sampler state management
@@ -174,7 +175,7 @@ class MetalDriver extends Driver {
 
 	function createDummyWhiteTexture() {
 		// Create a 1x1 white texture (RGBA8 format)
-		dummyWhiteTexture = MetalNative.create_texture(1, 1, 0, 1);  // format=0 (RGBA8), usage=1 (shader read)
+		dummyWhiteTexture = MetalNative.create_texture(1, 1, 0, 1, false, false);  // format=0 (RGBA8), usage=1 (shader read), no mipmaps, not cube
 		if (dummyWhiteTexture != null) {
 			// Upload white pixel data (255, 255, 255, 255)
 			var whitePixel = new hl.Bytes(4);
@@ -182,7 +183,7 @@ class MetalDriver extends Driver {
 			whitePixel[1] = 0xFF;  // G
 			whitePixel[2] = 0xFF;  // B
 			whitePixel[3] = 0xFF;  // A
-			MetalNative.upload_texture_data(dummyWhiteTexture, whitePixel, 1, 1, 0);
+			MetalNative.upload_texture_data(dummyWhiteTexture, whitePixel, 1, 1, 0, 0);  // level=0, slice=0
 		}
 	}
 
@@ -363,8 +364,10 @@ class MetalDriver extends Driver {
 	override function allocTexture(t:h3d.mat.Texture):Texture {
 		var format = getMetalTextureFormat(t.format);
 		var usage = getMetalTextureUsage(t);
+		var mipmapped = t.flags.has(MipMapped);
+		var isCube = t.flags.has(Cube);
 
-		var metalTexture = MetalNative.create_texture(t.width, t.height, format, usage);
+		var metalTexture = MetalNative.create_texture(t.width, t.height, format, usage, mipmapped, isCube);
 		if (metalTexture == null) {
 			throw "Failed to allocate Metal texture " + t.width + "x" + t.height;
 		}
@@ -394,6 +397,13 @@ class MetalDriver extends Driver {
 		}
 	}
 
+	override function generateMipMaps(texture:h3d.mat.Texture) {
+		if (texture.t != null) {
+			var metalTexture:Dynamic = texture.t.t;
+			MetalNative.generate_mipmaps(metalTexture);
+		}
+	}
+
 	override function uploadTexturePixels(t:h3d.mat.Texture, pixels:hxd.Pixels, mipLevel:Int, side:Int) {
 		if (t.t == null) {
 			t.t = allocTexture(t);
@@ -407,8 +417,8 @@ class MetalDriver extends Driver {
 		// Convert pixels to hl.Bytes
 		var data:hl.Bytes = @:privateAccess pixels.bytes.getData();
 		
-		// Upload texture data to Metal
-		if (!MetalNative.upload_texture_data(metalTexture, data, pixels.width, pixels.height, mipLevel)) {
+		// Upload texture data to Metal (side parameter is for cube texture faces)
+		if (!MetalNative.upload_texture_data(metalTexture, data, pixels.width, pixels.height, mipLevel, side)) {
 			throw "Failed to upload texture pixels";
 		}
 		
