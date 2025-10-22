@@ -855,6 +855,16 @@ class MetalDriver extends Driver {
 			if (currentRenderEncoder == null) {
 				throw "Failed to create render encoder";
 			}
+
+			// Initialize scissor rect to full viewport after beginning render pass
+			// This is critical because Metal doesn't persist scissor state across render passes
+			var engine = h3d.Engine.getCurrent();
+			if (engine != null) {
+				var viewWidth = tex != null ? tex.width : engine.width;
+				var viewHeight = tex != null ? tex.height : engine.height;
+				MetalNative.set_scissor_rect(currentRenderEncoder, 0, 0, viewWidth, viewHeight);
+				MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast viewWidth, cast viewHeight);
+			}
 		}
 	}
 
@@ -864,18 +874,19 @@ class MetalDriver extends Driver {
 	}
 
 	override function setRenderZone(x:Int, y:Int, width:Int, height:Int) {
+		// Set scissor rectangle for masking/clipping
+		// Metal uses top-left origin, coordinates match our input
 		if (currentRenderEncoder == null) return;
 
-		if (width < 0 || height < 0) {
-			// Reset to full viewport
-			var engine = h3d.Engine.getCurrent();
-			if (engine != null) {
-				MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast engine.width, cast engine.height);
-			}
+		var engine = h3d.Engine.getCurrent();
+		if (engine == null) return;
+
+		// Match GlDriver behavior: if x==0, y==0, and width/height are negative, reset to full viewport
+		if (x == 0 && y == 0 && width < 0 && height < 0) {
+			// Reset scissor to full viewport (disable clipping)
+			MetalNative.set_scissor_rect(currentRenderEncoder, 0, 0, engine.width, engine.height);
 		} else {
-			// Set viewport
-			MetalNative.set_viewport(currentRenderEncoder, cast x, cast y, cast width, cast height);
-			// Also set scissor rect
+			// Set scissor rect for clipping
 			MetalNative.set_scissor_rect(currentRenderEncoder, x, y, width, height);
 		}
 	}
