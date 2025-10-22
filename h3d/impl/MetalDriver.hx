@@ -101,6 +101,7 @@ private class MetalNative {
 	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
 	public static function set_depth_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool):Void {}
+	public static function set_stencil_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool, frontFunc:Int, frontSTfail:Int, frontDPfail:Int, frontPass:Int, backFunc:Int, backSTfail:Int, backDPfail:Int, backPass:Int, reference:Int, readMask:Int, writeMask:Int):Void {}
 	public static function set_cull_mode(encoder:Dynamic, cullMode:Int):Void {}
 	public static function set_triangle_fill_mode(encoder:Dynamic, wireframe:Bool):Void {}
 	public static function set_vertex_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
@@ -153,11 +154,14 @@ class MetalDriver extends Driver {
 	static inline var MAX_FRAMES_IN_FLIGHT = 3;
 	var currentFrameIndex : Int = 0;
 	var drawCallIndex : Int = 0;  // Track draw calls within current frame for buffer offsets
+	var defStencil : h3d.mat.Stencil;
+
 
 	public function new() {
 		shaders = new Map();
 		shaderCompiler = new hxsl.MetalOut();
 		samplerStates = new Map();
+		defStencil = new h3d.mat.Stencil();  // Default: Always pass, Keep operations
 
 		// Initialize Metal context - init() now returns void, so we check device availability instead
 		MetalNative.init();
@@ -896,7 +900,14 @@ class MetalDriver extends Driver {
 		if (currentRenderEncoder != null) {
 			var depthTest = pass.depthTest != Always; // If not Always, we want depth testing
 			var depthWrite = pass.depthWrite;
-			MetalNative.set_depth_state(currentRenderEncoder, depthTest, depthWrite);
+			// Use pass stencil or default stencil
+			var s = pass.stencil != null ? pass.stencil : defStencil;
+			MetalNative.set_stencil_state(currentRenderEncoder, depthTest, depthWrite,
+				Type.enumIndex(s.frontTest), Type.enumIndex(s.frontSTfail),
+				Type.enumIndex(s.frontDPfail), Type.enumIndex(s.frontPass),
+				Type.enumIndex(s.backTest), Type.enumIndex(s.backSTfail),
+				Type.enumIndex(s.backDPfail), Type.enumIndex(s.backPass),
+				s.reference, s.readMask, s.writeMask);
 			
 			// Set culling mode
 			// Metal cullMode: 0 = None, 1 = Front, 2 = Back
