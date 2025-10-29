@@ -729,6 +729,12 @@ class MetalOut {
 		add("#include <metal_stdlib>\n");
 		add("using namespace metal;\n\n");
 
+		// Add helper functions
+		add("// Helper function to convert screen coordinates to UV texture coordinates\n");
+		add("static inline float2 screenToUv(float2 screen) {\n");
+		add("\treturn screen * float2(0.5, -0.5) + float2(0.5, 0.5);\n");
+		add("}\n\n");
+
 		// Generate proper input/output structures
 		if( isVertex ) {
 			// Vertex input structure with proper attribute indices
