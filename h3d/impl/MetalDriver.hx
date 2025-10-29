@@ -393,6 +393,34 @@ class MetalDriver extends Driver {
 		};
 	}
 
+	override function allocDepthBuffer(t:h3d.mat.Texture):Texture {
+		// Metal handles depth textures the same way as color textures,
+		// just with different pixel formats
+		var format = getMetalTextureFormat(t.format);
+		var usage = 2; // MTLTextureUsageRenderTarget
+		var mipmapped = false; // Depth buffers typically don't use mipmaps
+		var isCube = false;
+
+		var metalTexture = MetalNative.create_texture(t.width, t.height, format, usage, mipmapped, isCube);
+		if (metalTexture == null) {
+			throw "Failed to allocate Metal depth buffer " + t.width + "x" + t.height;
+		}
+
+		t.flags.unset(WasCleared);
+
+		return {
+			t: cast metalTexture,
+			width: t.width,
+			height: t.height,
+			internalFmt: format,
+			pixelFmt: format,
+			bits: 0,
+			bind: 0,
+			bias: 0.0,
+			startMip: 0
+		};
+	}
+
 	override function disposeTexture(t:h3d.mat.Texture) {
 		if (t.t != null) {
 			var metalTexture:Dynamic = t.t.t;
