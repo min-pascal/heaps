@@ -654,11 +654,31 @@ class MetalOut {
 				add("]");
 			}
 		case TSwiz(e, regs):
-			writeExpr(e);
-			if( regs.length > 0 ) {
-				add(".");
-				for( r in regs )
-					add(r.getName().toLowerCase());
+			// Check if we're swizzling a scalar (broadcast to vector)
+			var isScalarBroadcast = switch(e.t) {
+				case TFloat: regs.length > 1;
+				default: false;
+			}
+
+			if( isScalarBroadcast ) {
+				// Metal doesn't support swizzling scalars - use constructor instead
+				// e.g. depth.xxxx becomes float4(depth)
+				var componentType = switch(regs.length) {
+					case 2: "float2";
+					case 3: "float3";
+					case 4: "float4";
+					default: "float";
+				}
+				add(componentType + "(");
+				writeExpr(e);
+				add(")");
+			} else {
+				writeExpr(e);
+				if( regs.length > 0 ) {
+					add(".");
+					for( r in regs )
+						add(r.getName().toLowerCase());
+				}
 			}
 		case TGlobal(g):
 			add(GLOBALS[g.getIndex()]);
