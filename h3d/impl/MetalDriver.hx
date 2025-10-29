@@ -557,6 +557,14 @@ class MetalDriver extends Driver {
 			case R8: 4; // MTLPixelFormatR8Unorm
 			case RGBA16F: 5; // MTLPixelFormatRGBA16Float
 			case RGBA32F: 6; // MTLPixelFormatRGBA32Float
+			case Depth16: 7; // Depth format
+			case Depth24: 8; // Depth format
+			case Depth24Stencil8: 9; // Depth+Stencil format
+			case Depth32: 7; // Use same code as Depth16, C side will use Depth32Float
+			case R16F: 10; // MTLPixelFormatR16Float
+			case R32F: 11; // MTLPixelFormatR32Float
+			case RG16F: 12; // MTLPixelFormatRG16Float
+			case RG32F: 13; // MTLPixelFormatRG32Float
 			default: 0;
 		};
 	}
