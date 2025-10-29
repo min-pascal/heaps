@@ -913,6 +913,76 @@ class MetalDriver extends Driver {
 		// No additional work needed here
 	}
 
+	override function setDepth(tex:Null<h3d.mat.Texture>) {
+		// End current render pass if active
+		if (currentRenderEncoder != null) {
+			MetalNative.end_encoding(currentRenderEncoder);
+			currentRenderEncoder = null;
+		}
+
+		// Store current depth target
+		currentTargets = tex != null ? [tex] : [];
+
+		// If null texture, we're done
+		if (tex == null) return;
+
+		// Check if texture needs allocation
+		var needsAlloc = (tex.t == null);
+		if (needsAlloc) {
+			allocTexture(tex);
+		}
+
+		// If no command buffer exists, create one
+		if (currentCommandBuffer == null) {
+			currentCommandBuffer = MetalNative.create_command_buffer();
+		}
+
+		// Begin depth-only render pass
+		if (currentCommandBuffer != null) {
+			var metalTexture:Dynamic = tex.t.t;
+			
+			// For depth textures, begin_texture_render_pass automatically creates
+			// a depth-only render pass (no color attachments)
+			// Clear on first use (needsAlloc), load on subsequent uses
+			var clearAction = needsAlloc || !tex.flags.has(WasCleared);
+			
+			if (clearAction) {
+				// First time - clear depth to 1.0
+				currentRenderEncoder = MetalNative.begin_texture_render_pass(
+					currentCommandBuffer,
+					metalTexture,
+					0, 0, 0, 255  // Not used for depth textures, but clear on first use
+				);
+				tex.flags.set(WasCleared);
+			} else {
+				// Subsequent uses - preserve depth content
+				currentRenderEncoder = MetalNative.begin_texture_render_pass(
+					currentCommandBuffer,
+					metalTexture,
+					0, 0, 0, -1  // Negative alpha signals MTLLoadActionLoad
+				);
+			}
+
+			if (currentRenderEncoder == null) {
+				throw "Failed to create depth render encoder";
+			}
+
+			// Set viewport and scissor for depth texture
+			MetalNative.set_scissor_rect(currentRenderEncoder, 0, 0, tex.width, tex.height);
+			MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast tex.width, cast tex.height);
+		}
+	}
+
+	override function setRenderTargets(textures:Array<h3d.mat.Texture>, depthBinding:h3d.Engine.DepthBinding = ReadWrite) {
+		// For now, route through single render target
+		// Full MRT support would require changes to begin_texture_render_pass
+		if (textures.length > 0) {
+			setRenderTarget(textures[0], 0, 0, depthBinding);
+		} else {
+			setRenderTarget(null, 0, 0, depthBinding);
+		}
+	}
+
 	override function setRenderZone(x:Int, y:Int, width:Int, height:Int) {
 		// Set scissor rectangle for masking/clipping
 		// Metal uses top-left origin, coordinates match our input
