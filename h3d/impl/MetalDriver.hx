@@ -98,7 +98,7 @@ private class MetalNative {
 	// Render command encoder
 	public static function begin_render_pass(cmdBuffer:Dynamic, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
 	public static function resume_render_pass(cmdBuffer:Dynamic):Dynamic { return null; }
-	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
+	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int, depthTexture:Dynamic = null):Dynamic { return null; }
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
 	public static function set_depth_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool):Void {}
 	public static function set_stencil_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool, frontFunc:Int, frontSTfail:Int, frontDPfail:Int, frontPass:Int, backFunc:Int, backSTfail:Int, backDPfail:Int, backPass:Int, reference:Int, readMask:Int, writeMask:Int):Void {}
@@ -635,8 +635,18 @@ class MetalDriver extends Driver {
 	}
 	
 	function getOrCreatePipeline(compiledShader:CompiledMetalShader, shader:hxsl.RuntimeShader, bufferStride:Int):Dynamic {
-		// Check if we have a cached pipeline for this stride
-		var pipeline = compiledShader.pipelineCache.get(bufferStride);
+		// CRITICAL: Include render target pixel format in cache key
+		// Different pipelines needed for different target formats (e.g., BGRA8 vs R16F)
+		var targetFormat = (currentTargets.length > 0 && currentTargets[0] != null) 
+			? getMetalTextureFormat(currentTargets[0].format)
+			: 1; // 1 = BGRA8Unorm for backbuffer
+		
+		// Create composite cache key: stride combined with format
+		// Use high bits for format, low bits for stride
+		var cacheKey = (targetFormat << 16) | bufferStride;
+		
+		// Check if we have a cached pipeline for this stride+format combination
+		var pipeline = compiledShader.pipelineCache.get(cacheKey);
 		if (pipeline != null) return pipeline;
 		
 		// Create new pipeline with correct stride
@@ -651,7 +661,7 @@ class MetalDriver extends Driver {
 		);
 		
 		if (pipeline != null) {
-			compiledShader.pipelineCache.set(bufferStride, pipeline);
+			compiledShader.pipelineCache.set(cacheKey, pipeline);
 		}
 		
 		return pipeline;
@@ -869,30 +879,31 @@ class MetalDriver extends Driver {
 					clearColor.b,
 					clearColor.a
 				);
+		} else {
+			// Rendering to texture - match OpenGL/DirectX behavior:
+			// Clear to black (0,0,0,0) on first use only, then preserve content
+			var metalTexture:Dynamic = tex.t.t;
+			var metalDepthTexture:Dynamic = (tex.depthBuffer != null) ? tex.depthBuffer.t.t : null;
+			
+			if (!tex.flags.has(WasCleared)) {
+				// First time rendering to this texture - clear to black
+				tex.flags.set(WasCleared);
+				currentRenderEncoder = MetalNative.begin_texture_render_pass(
+					currentCommandBuffer,
+					metalTexture,
+					0, 0, 0, 0,  // Clear to black (RGBA = 0,0,0,0)
+					metalDepthTexture
+				);
 			} else {
-				// Rendering to texture - match OpenGL/DirectX behavior:
-				// Clear to black (0,0,0,0) on first use only, then preserve content
-				var metalTexture:Dynamic = tex.t.t;
-				
-				if (!tex.flags.has(WasCleared)) {
-					// First time rendering to this texture - clear to black
-					tex.flags.set(WasCleared);
-					currentRenderEncoder = MetalNative.begin_texture_render_pass(
-						currentCommandBuffer,
-						metalTexture,
-						0, 0, 0, 0  // Clear to black (RGBA = 0,0,0,0)
-					);
-				} else {
-					// Subsequent renders - preserve existing content (Load action)
-					currentRenderEncoder = MetalNative.begin_texture_render_pass(
-						currentCommandBuffer,
-						metalTexture,
-						0, 0, 0, -1  // Negative alpha signals MTLLoadActionLoad
-					);
-				}
+				// Subsequent renders - preserve existing content (Load action)
+				currentRenderEncoder = MetalNative.begin_texture_render_pass(
+					currentCommandBuffer,
+					metalTexture,
+					0, 0, 0, -1,  // Negative alpha signals MTLLoadActionLoad
+					metalDepthTexture
+				);
 			}
-
-			if (currentRenderEncoder == null) {
+		}			if (currentRenderEncoder == null) {
 				throw "Failed to create render encoder";
 			}
 
