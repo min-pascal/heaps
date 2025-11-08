@@ -155,11 +155,6 @@ class MetalDriver extends Driver {
 	var currentFrameIndex : Int = 0;
 	var drawCallIndex : Int = 0;  // Track draw calls within current frame for buffer offsets
 	var defStencil : h3d.mat.Stencil;
-	
-	// Clear state tracking
-	var pendingClearColor : Null<h3d.Vector4> = null;
-	var pendingClearDepth : Null<Float> = null;
-	var pendingClearStencil : Null<Int> = null;
 
 
 	public function new() {
@@ -314,13 +309,11 @@ class MetalDriver extends Driver {
 	}
 
 	override function clear(?color:h3d.Vector4, ?depth:Float, ?stencil:Int) {
-		// Store clear values for next render pass
-		pendingClearColor = color;
-		pendingClearDepth = depth;
-		pendingClearStencil = stencil;
-		
-		// Don't set WasCleared flag here - it should be set when the render pass
-		// is actually created with the clear action in setRenderTarget()
+		// Mark current target as cleared (matching OpenGL behavior)
+		if (currentTargets.length > 0 && currentTargets[0] != null) {
+			currentTargets[0].flags.set(WasCleared);
+		}
+		// Clear color will be used in next render pass
 	}
 
 	override function present() {
@@ -887,29 +880,13 @@ class MetalDriver extends Driver {
 					clearColor.a
 				);
 		} else {
-			// Rendering to texture - use pending clear values or preserve content
+			// Rendering to texture - match OpenGL/DirectX behavior:
+			// Clear to black (0,0,0,0) on first use only, then preserve content
 			var metalTexture:Dynamic = tex.t.t;
 			var metalDepthTexture:Dynamic = (tex.depthBuffer != null) ? tex.depthBuffer.t.t : null;
 			
-			if (pendingClearColor != null) {
-				// Explicit clear was requested - always clear regardless of WasCleared flag
-				tex.flags.set(WasCleared);
-				var r = Std.int(pendingClearColor.x * 255);
-				var g = Std.int(pendingClearColor.y * 255);
-				var b = Std.int(pendingClearColor.z * 255);
-				var a = Std.int(pendingClearColor.w * 255);
-				currentRenderEncoder = MetalNative.begin_texture_render_pass(
-					currentCommandBuffer,
-					metalTexture,
-					r, g, b, a,
-					metalDepthTexture
-				);
-				// Clear pending clear values after use
-				pendingClearColor = null;
-				pendingClearDepth = null;
-				pendingClearStencil = null;
-			} else if (!tex.flags.has(WasCleared)) {
-				// First time rendering without explicit clear - clear to black
+			if (!tex.flags.has(WasCleared)) {
+				// First time rendering to this texture - clear to black
 				tex.flags.set(WasCleared);
 				currentRenderEncoder = MetalNative.begin_texture_render_pass(
 					currentCommandBuffer,
