@@ -98,7 +98,8 @@ private class MetalNative {
 	// Render command encoder
 	public static function begin_render_pass(cmdBuffer:Dynamic, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
 	public static function resume_render_pass(cmdBuffer:Dynamic):Dynamic { return null; }
-	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int, depthTexture:Dynamic = null):Dynamic { return null; }
+	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int, depthTexture:Dynamic):Dynamic { return null; }
+	public static function begin_depth_render_pass(cmdBuffer:Dynamic, depthTexture:Dynamic, clearDepth:Float):Dynamic { return null; }
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
 	public static function set_depth_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool):Void {}
 	public static function set_stencil_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool, frontFunc:Int, frontSTfail:Int, frontDPfail:Int, frontPass:Int, backFunc:Int, backSTfail:Int, backDPfail:Int, backPass:Int, reference:Int, readMask:Int, writeMask:Int):Void {}
@@ -146,6 +147,11 @@ class MetalDriver extends Driver {
 
 	// Dummy white texture for shaders that expect a texture but don't use one
 	var dummyWhiteTexture : Dynamic = null;
+	
+	// Clear state
+	var clearColor : {r:Int, g:Int, b:Int, a:Int} = {r: 0, g: 0, b: 0, a: 255};
+	var clearDepth : Float = 1.0;
+	var clearStencil : Int = 0;
 	
 	// Track if textures were bound in uploadShaderBuffers
 	var texturesBound : Bool = false;
@@ -261,10 +267,11 @@ class MetalDriver extends Driver {
 				var engine = h3d.Engine.getCurrent();
 				if (engine != null) {
 					var bgColor = engine.backgroundColor;
-					clearColor.r = (bgColor >> 16) & 0xFF;
-					clearColor.g = (bgColor >> 8) & 0xFF;
-					clearColor.b = bgColor & 0xFF;
-					clearColor.a = (bgColor >> 24) & 0xFF;
+					// Metal uses 0xAARRGGBB format, not 0xRRGGBBAA
+					clearColor.a = (bgColor >> 24) & 0xFF;  // Alpha from high bits
+					clearColor.r = (bgColor >> 16) & 0xFF;  // Red
+					clearColor.g = (bgColor >> 8) & 0xFF;   // Green
+					clearColor.b = bgColor & 0xFF;          // Blue from low bits
 				}
 			} catch (e:Dynamic) {
 				// Use default
@@ -309,11 +316,40 @@ class MetalDriver extends Driver {
 	}
 
 	override function clear(?color:h3d.Vector4, ?depth:Float, ?stencil:Int) {
-		// Mark current target as cleared (matching OpenGL behavior)
-		if (currentTargets.length > 0 && currentTargets[0] != null) {
-			currentTargets[0].flags.set(WasCleared);
+		// Store clear color for use in render pass
+		if (color != null) {
+			clearColor.r = Std.int(color.r * 255);
+			clearColor.g = Std.int(color.g * 255);
+			clearColor.b = Std.int(color.b * 255);
+			clearColor.a = Std.int(color.w * 255);
+		} else {
+			clearColor.r = 0;
+			clearColor.g = 0;
+			clearColor.b = 0;
+			clearColor.a = 255;
 		}
-		// Clear color will be used in next render pass
+		clearDepth = depth;
+		clearStencil = stencil;
+		
+		// If we have an active render encoder for texture rendering, we need to recreate it with new clear color
+		// This is necessary because Metal render pass clear colors are set at creation time
+		if (currentRenderEncoder != null && currentTargets.length > 0 && currentTargets[0] != null) {
+			// End current render pass
+			MetalNative.end_encoding(currentRenderEncoder);
+			currentRenderEncoder = null;
+			
+			// Recreate render pass with new clear color
+			var tex = currentTargets[0];
+			var metalTexture:Dynamic = tex.t.t;
+			var metalDepthTexture:Dynamic = (tex.depthBuffer != null) ? tex.depthBuffer.t.t : null;
+			
+			currentRenderEncoder = MetalNative.begin_texture_render_pass(
+				currentCommandBuffer,
+				metalTexture,
+				clearColor.r, clearColor.g, clearColor.b, clearColor.a,
+				metalDepthTexture
+			);
+		}
 	}
 
 	override function present() {
@@ -328,10 +364,11 @@ class MetalDriver extends Driver {
 				var engine = h3d.Engine.getCurrent();
 				if (engine != null) {
 					var bgColor = engine.backgroundColor;
-					clearColor.r = (bgColor >> 16) & 0xFF;
-					clearColor.g = (bgColor >> 8) & 0xFF;
-					clearColor.b = bgColor & 0xFF;
-					clearColor.a = (bgColor >> 24) & 0xFF;
+					// Metal uses 0xAARRGGBB format, not 0xRRGGBBAA
+					clearColor.a = (bgColor >> 24) & 0xFF;  // Alpha from high bits
+					clearColor.r = (bgColor >> 16) & 0xFF;  // Red
+					clearColor.g = (bgColor >> 8) & 0xFF;   // Green  
+					clearColor.b = bgColor & 0xFF;          // Blue from low bits
 				}
 			} catch (e:Dynamic) {
 				// Use default clear color if engine not available
@@ -366,6 +403,13 @@ class MetalDriver extends Driver {
 
 	// Texture management following established pattern
 	override function allocTexture(t:h3d.mat.Texture):Texture {
+		// Special handling for shadow maps - use depth textures
+		var isDepthFormat = t.format == Depth24 || t.format == Depth32 || t.format == Depth16 || t.format == Depth24Stencil8;
+		var hasDepthName = t.name != null && (t.name.toLowerCase().indexOf("shadow") >= 0 || t.name.toLowerCase().indexOf("depth") >= 0);
+		if (isDepthFormat || hasDepthName) {
+			return allocDepthBuffer(t);
+		}
+
 		var format = getMetalTextureFormat(t.format);
 		var usage = getMetalTextureUsage(t);
 		var mipmapped = t.flags.has(MipMapped);
@@ -880,26 +924,27 @@ class MetalDriver extends Driver {
 					clearColor.a
 				);
 		} else {
-			// Rendering to texture - match OpenGL/DirectX behavior:
-			// Clear to black (0,0,0,0) on first use only, then preserve content
-			var metalTexture:Dynamic = tex.t.t;
-			var metalDepthTexture:Dynamic = (tex.depthBuffer != null) ? tex.depthBuffer.t.t : null;
-			
-			if (!tex.flags.has(WasCleared)) {
-				// First time rendering to this texture - clear to black
-				tex.flags.set(WasCleared);
-				currentRenderEncoder = MetalNative.begin_texture_render_pass(
+			// Check if this is depth-only rendering
+			if (depthBinding == DepthOnly) {
+				// Depth-only rendering (e.g., shadow maps)
+				trace("MetalDriver: Using depth-only render pass for texture: " + tex.name);
+				var metalDepthTexture:Dynamic = tex.t.t;
+				trace("MetalDriver: Depth texture pointer: " + metalDepthTexture + ", clearDepth: " + clearDepth);
+				currentRenderEncoder = MetalNative.begin_depth_render_pass(
 					currentCommandBuffer,
-					metalTexture,
-					0, 0, 0, 0,  // Clear to black (RGBA = 0,0,0,0)
-					metalDepthTexture
+					metalDepthTexture,
+					clearDepth
 				);
 			} else {
-				// Subsequent renders - preserve existing content (Load action)
+				// Rendering to texture - use stored clear color for proper shadow map clearing
+				var metalTexture:Dynamic = tex.t.t;
+				var metalDepthTexture:Dynamic = (tex.depthBuffer != null) ? tex.depthBuffer.t.t : null;
+				
+				// Always clear with the stored clear color (important for shadow maps)
 				currentRenderEncoder = MetalNative.begin_texture_render_pass(
 					currentCommandBuffer,
 					metalTexture,
-					0, 0, 0, -1,  // Negative alpha signals MTLLoadActionLoad
+					clearColor.r, clearColor.g, clearColor.b, clearColor.a,
 					metalDepthTexture
 				);
 			}
@@ -962,7 +1007,8 @@ class MetalDriver extends Driver {
 				currentRenderEncoder = MetalNative.begin_texture_render_pass(
 					currentCommandBuffer,
 					metalTexture,
-					0, 0, 0, 255  // Not used for depth textures, but clear on first use
+					0, 0, 0, 255,  // Not used for depth textures, but clear on first use
+					null
 				);
 				tex.flags.set(WasCleared);
 			} else {
@@ -970,7 +1016,8 @@ class MetalDriver extends Driver {
 				currentRenderEncoder = MetalNative.begin_texture_render_pass(
 					currentCommandBuffer,
 					metalTexture,
-					0, 0, 0, -1  // Negative alpha signals MTLLoadActionLoad
+					0, 0, 0, -1,  // Negative alpha signals MTLLoadActionLoad
+					null
 				);
 			}
 
