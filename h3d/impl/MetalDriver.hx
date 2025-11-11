@@ -662,11 +662,21 @@ class MetalDriver extends Driver {
 
 	function getFormatBits(fmt:h3d.mat.Data.TextureFormat):Int {
 		return switch(fmt) {
-			case RGBA | BGRA | RGB8: 32;
+			case RGBA | BGRA | RGB8 | ARGB | SRGB | SRGB_ALPHA | RGB10A2 | RG11B10UF: 32;
 			case RG8: 16;
 			case R8: 8;
-			case RGBA16F: 64;
-			case RGBA32F: 128;
+			case RGBA16F | RGB16F: 64;
+			case RGBA32F | RGB32F: 128;
+			case R16F: 16;
+			case R32F: 32;
+			case RG16F: 32;
+			case RG32F: 64;
+			case R16U: 16;
+			case RG16U: 32;
+			case RGB16U | RGBA16U: 64;
+			case Depth16: 16;
+			case Depth24 | Depth24Stencil8: 32;
+			case Depth32: 32;
 			default: 32;
 		};
 	}
