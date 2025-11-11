@@ -349,6 +349,9 @@ class MetalDriver extends Driver {
 				clearColor.r, clearColor.g, clearColor.b, clearColor.a,
 				metalDepthTexture
 			);
+			
+			// Mark texture as cleared so subsequent setRenderTarget calls don't clear it again
+			tex.flags.set(WasCleared);
 		}
 	}
 
