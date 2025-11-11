@@ -958,17 +958,32 @@ class MetalDriver extends Driver {
 					clearDepth
 				);
 			} else {
-				// Rendering to texture - use stored clear color for proper shadow map clearing
+				// Rendering to texture
 				var metalTexture:Dynamic = tex.t.t;
 				var metalDepthTexture:Dynamic = (tex.depthBuffer != null) ? tex.depthBuffer.t.t : null;
 				
-				// Always clear with the stored clear color (important for shadow maps)
-				currentRenderEncoder = MetalNative.begin_texture_render_pass(
-					currentCommandBuffer,
-					metalTexture,
-					clearColor.r, clearColor.g, clearColor.b, clearColor.a,
-					metalDepthTexture
-				);
+				// CRITICAL FIX: Only clear on first use, like OpenGL does
+				// Check if texture was already cleared - if so, use Load action (negative alpha)
+				var shouldClear = !tex.flags.has(WasCleared);
+				
+				if (shouldClear) {
+					// First use: clear with stored clear color
+					currentRenderEncoder = MetalNative.begin_texture_render_pass(
+						currentCommandBuffer,
+						metalTexture,
+						clearColor.r, clearColor.g, clearColor.b, clearColor.a,
+						metalDepthTexture
+					);
+					tex.flags.set(WasCleared);
+				} else {
+					// Subsequent uses: load existing content (negative alpha = Load action)
+					currentRenderEncoder = MetalNative.begin_texture_render_pass(
+						currentCommandBuffer,
+						metalTexture,
+						0, 0, 0, -1,  // Negative alpha = Load existing content
+						metalDepthTexture
+					);
+				}
 			}
 		}			if (currentRenderEncoder == null) {
 				throw "Failed to create render encoder";
