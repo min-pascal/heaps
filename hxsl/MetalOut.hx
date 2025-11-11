@@ -377,6 +377,9 @@ class MetalOut {
 			add(";\n");
 		case TDiscard:
 			add(tabs + "discard;\n");
+		case TMeta(_, _, e):
+			// Metadata expressions - just output the inner expression
+			addExpr(e, tabs);
 		default:
 			add(tabs);
 			writeExpr(e);
@@ -700,6 +703,9 @@ class MetalOut {
 				}
 			}
 			add("})");
+		case TMeta(_, _, e):
+			// Metadata expressions - just output the inner expression like GLSL does
+			writeExpr(e);
 		default:
 			add("/* unsupported expr: " + e.e.getName() + " */");
 		}
