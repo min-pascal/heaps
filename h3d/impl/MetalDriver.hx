@@ -915,6 +915,11 @@ class MetalDriver extends Driver {
 
 		// Store current render target
 		currentTargets = tex != null ? [tex] : [];
+		
+		// Update lastFrame like OpenGL driver does
+		if (tex != null) {
+			tex.lastFrame = frame;
+		}
 
 		// If no command buffer exists, create one
 		if (currentCommandBuffer == null) {
