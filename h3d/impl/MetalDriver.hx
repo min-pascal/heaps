@@ -630,13 +630,25 @@ class MetalDriver extends Driver {
 			case RGBA16F: 5; // MTLPixelFormatRGBA16Float
 			case RGBA32F: 6; // MTLPixelFormatRGBA32Float
 			case Depth16: 7; // MTLPixelFormatDepth16Unorm
-			case Depth24: 8; // MTLPixelFormatDepth24Unorm_Stencil8
-			case Depth24Stencil8: 9; // MTLPixelFormatDepth24Unorm_Stencil8
-			case Depth32: 10; // MTLPixelFormatDepth32Float (NEW: depth2d<float>)
+			case Depth24: 8; // MTLPixelFormatDepth32Float (Apple Silicon doesn't support Depth24)
+			case Depth24Stencil8: 9; // MTLPixelFormatDepth32Float (Apple Silicon doesn't support Depth24)
+			case Depth32: 10; // MTLPixelFormatDepth32Float
 			case R16F: 11; // MTLPixelFormatR16Float
 			case R32F: 12; // MTLPixelFormatR32Float
 			case RG16F: 13; // MTLPixelFormatRG16Float
 			case RG32F: 14; // MTLPixelFormatRG32Float
+			case RGB16F: 15; // MTLPixelFormatRGBA16Float (use RGBA for RGB)
+			case RGB32F: 16; // MTLPixelFormatRGBA32Float (use RGBA for RGB)
+			case SRGB: 17; // MTLPixelFormatRGBA8Unorm_sRGB (use RGBA for RGB)
+			case SRGB_ALPHA: 18; // MTLPixelFormatRGBA8Unorm_sRGB
+			case RGB10A2: 19; // MTLPixelFormatRGB10A2Unorm
+			case RG11B10UF: 20; // MTLPixelFormatRG11B10Float
+			case R16U: 21; // MTLPixelFormatR16Unorm
+			case RG16U: 22; // MTLPixelFormatRG16Unorm
+			case RGB16U: 23; // MTLPixelFormatRGBA16Unorm (use RGBA for RGB)
+			case RGBA16U: 24; // MTLPixelFormatRGBA16Unorm
+			case ARGB: 0; // Map to RGBA8Unorm
+			case S3TC(n): 0; // Compressed formats not yet supported on Metal
 			default: 0;
 		};
 	}
