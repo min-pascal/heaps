@@ -1256,9 +1256,14 @@ class MetalDriver extends Driver {
 
 	override function isSupportedFormat(fmt:h3d.mat.Data.TextureFormat):Bool {
 		return switch(fmt) {
-			case RGBA | BGRA | RGB8 | RG8 | R8: true;
-			case RGBA16F | RGBA32F | RG16F | RG32F | R16F | R32F: true;
+			case RGBA | BGRA | ARGB | RGB8 | RG8 | R8: true;
+			case RGBA16F | RGBA32F | RGB16F | RGB32F: true;
+			case RG16F | RG32F | R16F | R32F: true;
+			case SRGB | SRGB_ALPHA: true;
+			case RGB10A2 | RG11B10UF: true;
+			case R16U | RG16U | RGB16U | RGBA16U: true;
 			case Depth16 | Depth24 | Depth24Stencil8 | Depth32: true;
+			case S3TC(_): false; // Compressed formats not yet supported
 			default: false;
 		};
 	}
