@@ -77,9 +77,11 @@ class Checker {
 			case Cross:
 				[ { args : [ { name : "a", type : vec3 }, { name : "b", type : vec3 } ], ret : vec3 } ];
 			case Texture:
-				[for( t in texDefs ) { args : [{ name : "tex", type : TSampler(t.dim,t.arr) }, { name : "uv", type : t.uv }], ret : vec4 }];
+				[for( t in texDefs ) { args : [{ name : "tex", type : TSampler(t.dim,t.arr) }, { name : "uv", type : t.uv }], ret : vec4 }]
+				.concat([for( t in texDefs ) { args : [{ name : "tex", type : TSamplerDepth(t.dim,t.arr) }, { name : "uv", type : t.uv }], ret : TFloat }]);  // Depth returns float
 			case TextureLod:
-				[for( t in texDefs ) { args : [{ name : "tex", type : TSampler(t.dim,t.arr) }, { name : "uv", type : t.uv }, { name : "lod", type : TFloat }], ret : vec4 }];
+				[for( t in texDefs ) { args : [{ name : "tex", type : TSampler(t.dim,t.arr) }, { name : "uv", type : t.uv }, { name : "lod", type : TFloat }], ret : vec4 }]
+				.concat([for( t in texDefs ) { args : [{ name : "tex", type : TSamplerDepth(t.dim,t.arr) }, { name : "uv", type : t.uv }, { name : "lod", type : TFloat }], ret : TFloat }]);  // Depth returns float
 			case Texel:
 				[for( t in texDefs ) { args : [{ name : "tex", type : TSampler(t.dim,t.arr) }, { name : "pos", type : t.iuv }], ret : vec4 }];
 			case TextureSize:
@@ -958,6 +960,12 @@ class Checker {
 					}
 				case Ignore, Doc(_):
 				case Flat: if( tv.kind != Local ) error("flat only allowed on local", pos);
+				case Depth:
+					// Depth qualifier marks depth/shadow textures for Metal compliance
+					switch( v.type ) {
+					case TChannel(_), TSampler(_), TSamplerDepth(_), TArray(TChannel(_), _), TArray(TSampler(_), _), TArray(TSamplerDepth(_), _):
+					default: error("@depth should be on channel or sampler type", pos);
+					}
 				}
 		}
 		if( tv.type != null )
@@ -1066,12 +1074,15 @@ class Checker {
 		if( g == null ) {
 			var gl : TGlobal = switch( [f, e.t] ) {
 			case ["get", TSampler(_)]: Texture;
+			case ["get", TSamplerDepth(_)]: Texture;  // Depth samplers support get
 			case ["get", TChannel(_)]: ChannelRead;
 			case ["getLod", TSampler(_)]: TextureLod;
+			case ["getLod", TSamplerDepth(_)]: TextureLod;  // Depth samplers support getLod
 			case ["getLod", TChannel(_)]: ChannelReadLod;
 			case ["fetch"|"fetchLod", TSampler(_)]: Texel;
 			case ["fetch"|"fetchLod", TChannel(_)]: ChannelFetch;
 			case ["size", TSampler(_) | TRWTexture(_)]: TextureSize;
+			case ["size", TSamplerDepth(_)]: TextureSize;  // Depth samplers support size
 			case ["size", TChannel(_)]: ChannelTextureSize;
 			case ["store", TRWTexture(_)]: ImageStore;
 			default: null;

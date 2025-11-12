@@ -35,6 +35,7 @@ enum Type {
 	TArray( t : Type, size : SizeDecl );
 	TBuffer( t : Type, size : SizeDecl, kind : BufferKind );
 	TChannel( size : Int );
+	TSamplerDepth( dim : TexDimension, isArray : Bool );
 }
 
 enum VecType {
@@ -103,6 +104,7 @@ enum VarQualifier {
 	Sampler( name : String );
 	Final;
 	Flat;
+	Depth;
 }
 
 enum Prec {
@@ -638,7 +640,7 @@ class Tools {
 		case TMat4: 16;
 		case TMat3x4: 12;
 		case TBytes(s): s;
-		case TBool, TString, TSampler(_), TRWTexture(_), TFun(_): 0;
+		case TBool, TString, TSampler(_), TSamplerDepth(_), TRWTexture(_), TFun(_): 0;
 		case TArray(t, SConst(v)), TBuffer(t, SConst(v),_): size(t) * v;
 		case TArray(_, SVar(_)), TBuffer(_): 0;
 		}

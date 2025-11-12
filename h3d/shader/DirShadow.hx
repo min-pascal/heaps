@@ -15,7 +15,7 @@ class DirShadow extends hxsl.Shader {
 		@param var pcfScale : Float;
 		@param var shadowRes : Vec2;
 
-		@param var shadowMap : Channel;
+		@param @depth var shadowMap : Channel;
 		@param var shadowProj : Mat3x4;
 		@param var shadowBias : Float;
 

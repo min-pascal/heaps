@@ -30,6 +30,10 @@ class Macros {
 			macro : hxsl.Types.Texture;
 		case TSampler(_, true), TRWTexture(_,true,_):
 			macro : hxsl.Types.TextureArray;
+		case TSamplerDepth(_, false):
+			macro : hxsl.Types.Sampler2DShadow;  // Depth comparison sampler
+		case TSamplerDepth(_, true):
+			macro : Array<hxsl.Types.Sampler2DShadow>;  // Array of depth samplers
 		case TMat2, TMat3, TMat3x4, TMat4:
 			macro : hxsl.Types.Matrix;
 		case TString:

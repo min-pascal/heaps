@@ -80,6 +80,8 @@ class MacroParser {
 			v.qualifiers.push(PerInstance(1));
 		case "flat":
 			v.qualifiers.push(Flat);
+		case "depth":
+			v.qualifiers.push(Depth);
 		default:
 			error("Unsupported qualifier " + m.name, m.pos);
 		}
@@ -129,8 +131,15 @@ class MacroParser {
 			case "Channel3": return TChannel(3);
 			case "Channel4": return TChannel(4);
 			case _ if( StringTools.startsWith(name,"Sampler") ):
-				var t = getTexDim(name.substr(7), (d,arr) -> TSampler(d,arr));
-				if( t != null ) return t;
+				// Check if it's a depth sampler (ends with "Shadow")
+				if( StringTools.endsWith(name, "Shadow") ) {
+					var dimName = name.substr(7, name.length - 13);  // Remove "Sampler" and "Shadow"
+					var t = getTexDim(dimName, (d,arr) -> TSamplerDepth(d,arr));
+					if( t != null ) return t;
+				} else {
+					var t = getTexDim(name.substr(7), (d,arr) -> TSampler(d,arr));
+					if( t != null ) return t;
+				}
 			}
 		case TPath( { pack : [], name : name, sub : null, params : pl } ) if( StringTools.startsWith(name,"RWTexture") ):
 			var chans = switch( pl[0] ) {

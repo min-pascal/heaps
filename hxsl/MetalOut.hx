@@ -194,6 +194,9 @@ class MetalOut {
 			add("_mat3x4");
 		case TSampler(dim, arr):
 			add(getSamplerType(dim, arr));
+		case TSamplerDepth(dim, arr):
+			// Depth samplers always use depth2d<float> for Metal hardware depth comparison
+			add(getDepthSamplerType(dim, arr));
 		case TRWTexture(dim, arr, chans):
 			add(getTextureType(dim, arr, chans, true));
 		case TStruct(vl):
@@ -222,12 +225,28 @@ class MetalOut {
 		}
 	}
 
-	function getSamplerType(dim:TexDimension, arr:Bool) {
+	function getSamplerType(dim:TexDimension, arr:Bool, ?varName:String) {
+		// For shadow shaders, use depth2d<float> for 2D textures
+		// This enables hardware depth comparison with sample_compare()
+		if (isShadowShader && dim == T2D) {
+			return "depth2d<float>";
+		}
+		
 		return switch(dim) {
 		case T1D: "texture1d<float>";
 		case T2D: "texture2d<float>";
 		case T3D: "texture3d<float>";
 		case TCube: "texturecube<float>";
+		}
+	}
+	
+	function getDepthSamplerType(dim:TexDimension, arr:Bool) {
+		// Depth samplers always use Metal depth texture types for hardware comparison
+		return switch(dim) {
+		case T1D: "depth1d<float>";  // Rarely used
+		case T2D: "depth2d<float>";  // Standard for shadow maps
+		case T3D: "depth3d<float>";  // For volumetric shadows
+		case TCube: "depthcube<float>";  // For omnidirectional shadows
 		}
 	}
 
@@ -276,6 +295,16 @@ class MetalOut {
 			add(" *");
 			ident(v);
 			add(" [[buffer(0)]]"); // This will be handled by function parameter generation
+		case TSampler(dim, arr):
+			// Special handling for samplers to detect depth textures by name
+			add(getSamplerType(dim, arr, v.name));
+			add(" ");
+			ident(v);
+		case TSamplerDepth(dim, arr):
+			// Depth samplers explicitly use depth texture types
+			add(getDepthSamplerType(dim, arr));
+			add(" ");
+			ident(v);
 		default:
 			addType(v.type);
 			add(" ");
@@ -336,8 +365,10 @@ class MetalOut {
 	function isTextureType( t : Type ) : Bool {
 		return switch( t ) {
 		case TSampler(_,_): true;
+		case TSamplerDepth(_,_): true;  // Depth samplers are textures too
 		case TRWTexture(_,_,_): true;
 		case TArray(TSampler(_,_), _): true;
+		case TArray(TSamplerDepth(_,_), _): true;  // Array of depth samplers
 		case TArray(TRWTexture(_,_,_), _): true;
 		default: false;
 		};
@@ -711,6 +742,8 @@ class MetalOut {
 		}
 	}
 
+	var isShadowShader : Bool = false;  // NEW: Track if this shader uses shadows
+	
 	public function run( s : ShaderData ) {
 		locals = new Map();
 		decls = [];
@@ -721,6 +754,28 @@ class MetalOut {
 		isVertex = false;
 		isFragment = false;
 		isCompute = false;
+		
+		// Detect if this is a shadow shader by checking for shadow-related variables
+		isShadowShader = false;
+		for (v in s.vars) {
+			var lowerName = v.name.toLowerCase();
+			// Debug: log all variable names
+			try {
+				var f = sys.io.File.append("/tmp/metal_shader_vars.txt", false);
+				f.writeString('Shader "${s.name}" var: "${v.name}" (${v.kind})\n');
+				f.close();
+			} catch(e:Dynamic) {}
+			
+			if (lowerName.indexOf("shadow") >= 0) {
+				isShadowShader = true;
+				try {
+					var f = sys.io.File.append("/tmp/metal_shader_vars.txt", false);
+					f.writeString('  -> SHADOW SHADER DETECTED!\n');
+					f.close();
+				} catch(e:Dynamic) {}
+				break;
+			}
+		}
 
 		if( s.funs.length != 1 ) throw "assert";
 		var f = s.funs[0];
@@ -912,7 +967,29 @@ class MetalOut {
 						default: v.type;
 						};
 						v.type = baseType;
-						addType(v.type);
+						
+						// Special handling for samplers to detect depth textures by name
+						switch(v.type) {
+						case TSampler(dim, arr):
+							// Debug: Save variable name for inspection
+							try {
+								var f = sys.io.File.append("/tmp/metal_texture_vars.txt", false);
+								f.writeString('Texture var: name="${v.name}" type=TSampler dim=$dim\n');
+								f.close();
+							} catch(e:Dynamic) {}
+							add(getSamplerType(dim, arr, v.name));
+						case TSamplerDepth(dim, arr):
+							// Depth samplers explicitly use depth texture types
+							try {
+								var f = sys.io.File.append("/tmp/metal_texture_vars.txt", false);
+								f.writeString('Depth texture var: name="${v.name}" type=TSamplerDepth dim=$dim\n');
+								f.close();
+							} catch(e:Dynamic) {}
+							add(getDepthSamplerType(dim, arr));
+						default:
+							addType(v.type);
+						}
+						
 						v.type = old;
 						add(" ");
 						add(varName(v));
@@ -952,6 +1029,9 @@ class MetalOut {
 				}
 			}
 			add(") {\n");
+
+			// Add fragCoord support - use input.position which is gl_FragCoord equivalent in Metal
+			add("\tfloat4 _fragCoord = input.position;\n");
 
 			// Declare local variables for varyings from vertex shader
 			// Var kind in fragment = interpolated outputs from vertex shader
