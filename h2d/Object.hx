@@ -890,7 +890,7 @@ class Object #if (domkit && !domkit_heaps) implements domkit.Model<h2d.Object> #
 
 		var t = ctx.textures.allocTarget("filterTemp", width, height, false);
 		ctx.pushTarget(t, xMin, yMin, width, height);
-		ctx.engine.clear(0);
+		ctx.engine.clearF(new h3d.Vector4(0,0,0,0));
 
 		// reset transform and update children
 		var oldAlpha = ctx.globalAlpha;
