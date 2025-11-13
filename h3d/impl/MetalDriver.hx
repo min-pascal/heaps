@@ -92,7 +92,7 @@ private class MetalNative {
 
 	// Shader compilation
 	public static function compile_shader(source:String, shaderType:Int):Dynamic { return null; }
-	public static function create_render_pipeline(vertexShader:Dynamic, fragmentShader:Dynamic, vertexDesc:String):Dynamic { return null; }
+	public static function create_render_pipeline(vertexShader:Dynamic, fragmentShader:Dynamic, vertexDesc:String, blendSrc:Int, blendDst:Int, blendAlphaSrc:Int, blendAlphaDst:Int):Dynamic { return null; }
 	public static function dispose_pipeline(pipeline:Dynamic):Void {}
 
 	// Render command encoder
@@ -133,6 +133,7 @@ class MetalDriver extends Driver {
 	var currentTargets : Array<h3d.mat.Texture> = [];
 	var frame : Int;
 	var renderedToBackbuffer : Bool = false;  // Track if we got a drawable for backbuffer
+	var backbufferRenderPassCreated : Bool = false;  // Track if begin_render_pass was called this frame
 
 	// Shader compilation and caching following DirectX pattern
 	var shaders : Map<Int, CompiledMetalShader>;
@@ -155,6 +156,12 @@ class MetalDriver extends Driver {
 	
 	// Track if textures were bound in uploadShaderBuffers
 	var texturesBound : Bool = false;
+	
+	// Current blend mode from selectMaterial (used when creating pipeline in draw)
+	var currentBlendSrc : Int = 2;      // SrcAlpha
+	var currentBlendDst : Int = 6;      // OneMinusSrcAlpha  
+	var currentBlendAlphaSrc : Int = 2; // SrcAlpha
+	var currentBlendAlphaDst : Int = 6; // OneMinusSrcAlpha
 	
 	// Triple buffering for dynamic uniform buffers
 	static inline var MAX_FRAMES_IN_FLIGHT = 3;
@@ -243,8 +250,9 @@ class MetalDriver extends Driver {
 		this.frame = frame;
 		texturesBound = false; // Reset texture binding flag for new frame
 		
-		// Reset flag - will be set to true later if we actually render to backbuffer
+		// Reset flags for new frame
 		renderedToBackbuffer = false;
+		backbufferRenderPassCreated = false;
 		
 		// Only set up command buffer if we're actually creating a new command buffer
 		// If command buffer already exists (e.g., from setRenderTarget), don't create new one
@@ -262,6 +270,7 @@ class MetalDriver extends Driver {
 		// If reusing existing buffer (e.g., from setRenderTarget), skip this
 		if (creatingNewCommandBuffer && currentCommandBuffer != null) {
 			renderedToBackbuffer = true;  // Mark that we're rendering to backbuffer
+			backbufferRenderPassCreated = true;
 			var clearColor = {r: 26, g: 26, b: 26, a: 255}; // Default dark background
 			try {
 				var engine = h3d.Engine.getCurrent();
@@ -703,22 +712,26 @@ class MetalDriver extends Driver {
 		return "";
 	}
 	
-	function getOrCreatePipeline(compiledShader:CompiledMetalShader, shader:hxsl.RuntimeShader, bufferStride:Int):Dynamic {
-		// CRITICAL: Include render target pixel format in cache key
-		// Different pipelines needed for different target formats (e.g., BGRA8 vs R16F)
+	function getOrCreatePipeline(compiledShader:CompiledMetalShader, shader:hxsl.RuntimeShader, bufferStride:Int, 
+	                             blendSrc:Int, blendDst:Int, blendAlphaSrc:Int, blendAlphaDst:Int):Dynamic {
+		// CRITICAL: Include render target pixel format AND depth buffer state AND blend mode in cache key
+		// Different pipelines needed for different target formats (e.g., BGRA8 vs R16F),
+		// different depth buffer configurations (with/without depth), and different blend modes
 		var targetFormat = (currentTargets.length > 0 && currentTargets[0] != null) 
 			? getMetalTextureFormat(currentTargets[0].format)
 			: 1; // 1 = BGRA8Unorm for backbuffer
 		
-		// Create composite cache key: stride combined with format
-		// Use high bits for format, low bits for stride
-		var cacheKey = (targetFormat << 16) | bufferStride;
+		// Check if we have a depth buffer attached to current render target
+		var hasDepth = (currentTargets.length > 0 && currentTargets[0] != null && currentTargets[0].depthBuffer != null);
+		
+		// Create blend hash (fits in 16 bits: 4 bits per parameter)
+		var blendHash = blendSrc | (blendDst << 4) | (blendAlphaSrc << 8) | (blendAlphaDst << 12);
 		
 		// Check if we have a cached pipeline for this stride+format combination
 		var pipeline = compiledShader.pipelineCache.get(cacheKey);
 		if (pipeline != null) return pipeline;
 		
-		// Create new pipeline with correct stride
+		// Create new pipeline with correct stride and blend mode
 		var vertexDesc = generateVertexDescriptor(shader);
 		// Append stride to descriptor
 		vertexDesc += '|stride:' + bufferStride;
@@ -726,7 +739,8 @@ class MetalDriver extends Driver {
 		pipeline = MetalNative.create_render_pipeline(
 			compiledShader.vertex != null ? compiledShader.vertex.shader : null,
 			compiledShader.fragment != null ? compiledShader.fragment.shader : null,
-			vertexDesc
+			vertexDesc,
+			blendSrc, blendDst, blendAlphaSrc, blendAlphaDst
 		);
 		
 		if (pipeline != null) {
@@ -820,12 +834,13 @@ class MetalDriver extends Driver {
 			return;
 		}
 
-		// Get or create pipeline for current buffer format
-		var pipeline = getOrCreatePipeline(currentShader, currentRuntimeShader, currentBuffer.format.strideBytes);
+		// Get or create pipeline with current blend mode and buffer format
+		var pipeline = getOrCreatePipeline(currentShader, currentRuntimeShader, currentBuffer.format.strideBytes,
+		                                   currentBlendSrc, currentBlendDst, currentBlendAlphaSrc, currentBlendAlphaDst);
 		if (pipeline == null) {
 			return;
 		}
-
+		
 		// Set the pipeline state
 		MetalNative.set_render_pipeline_state(currentRenderEncoder, pipeline);
 
@@ -945,14 +960,24 @@ class MetalDriver extends Driver {
 			}
 
 			if (tex == null) {
-				// Rendering to backbuffer - always clear with backgroundColor
-				currentRenderEncoder = MetalNative.begin_render_pass(
-					currentCommandBuffer,
-					clearColor.r,
-					clearColor.g,
-					clearColor.b,
-					clearColor.a
-				);
+				// Rendering to backbuffer
+				// Use resume_render_pass if we already created a render pass this frame
+				// This preserves content like the red circle when returning from filter rendering
+				if (backbufferRenderPassCreated) {
+					// We already have a drawable from begin_render_pass - resume it
+					currentRenderEncoder = MetalNative.resume_render_pass(currentCommandBuffer);
+				} else {
+					// First render pass to backbuffer this frame - clear it
+					backbufferRenderPassCreated = true;
+					renderedToBackbuffer = true;
+					currentRenderEncoder = MetalNative.begin_render_pass(
+						currentCommandBuffer,
+						clearColor.r,
+						clearColor.g,
+						clearColor.b,
+						clearColor.a
+					);
+				}
 		} else {
 			// Check if this is depth-only rendering
 			if (depthBinding == DepthOnly) {
@@ -1105,6 +1130,14 @@ class MetalDriver extends Driver {
 	}
 
 	override function selectMaterial(pass:h3d.mat.Pass) {
+		// Extract and store blend parameters from Pass for use in draw()
+		@:privateAccess {
+			currentBlendSrc = h3d.mat.Pass.getBlendSrc(pass.bits);
+			currentBlendDst = h3d.mat.Pass.getBlendDst(pass.bits);
+			currentBlendAlphaSrc = h3d.mat.Pass.getBlendAlphaSrc(pass.bits);
+			currentBlendAlphaDst = h3d.mat.Pass.getBlendAlphaDst(pass.bits);
+		}
+		
 		// Set depth testing state based on material pass settings
 		if (currentRenderEncoder != null) {
 			var depthTest = pass.depthTest != Always; // If not Always, we want depth testing
