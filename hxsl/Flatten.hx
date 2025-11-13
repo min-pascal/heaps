@@ -26,7 +26,7 @@ class Flatten {
 	var params : Array<TVar>;
 	var outVars : Array<TVar>;
 	var varMap : Map<TVar,Alloc>;
-	var textureFormats : Array<{ dim : TexDimension, arr : Bool, rw : Int }>;
+	var textureFormats : Array<{ dim : TexDimension, arr : Bool, rw : Int, isDepth : Bool }>;
 	public var allocData : Map< TVar, Array<Alloc> >;
 
 	public function new() {
@@ -61,7 +61,17 @@ class Flatten {
 			var name = t.dim == T2D ? "" : t.dim.getName().substr(1);
 			if( t.rw > 0 ) name = "RW"+name+t.rw;
 			if( t.arr ) name += "Array";
-			packTextures(prefix + "Textures" + name, allVars, t.rw == 0 ? TSampler(t.dim, t.arr) : TRWTexture(t.dim, t.arr, t.rw));
+			if( t.isDepth ) name += "Depth";  // Add suffix for depth samplers
+			var samplerType = if( t.isDepth ) {
+				trace('[FLATTEN.packTextures] Creating TSamplerDepth for ${t.dim} isDepth=${t.isDepth}');
+				TSamplerDepth(t.dim, t.arr);
+			} else if( t.rw == 0 ) {
+				TSampler(t.dim, t.arr);
+			} else {
+				TRWTexture(t.dim, t.arr, t.rw);
+			};
+			trace('[FLATTEN.packTextures] Packing "${prefix}Textures${name}" with type ${samplerType}');
+			packTextures(prefix + "Textures" + name, allVars, samplerType);
 		}
 		packBuffers("buffers", allVars, Uniform);
 		packBuffers("storagebuffers", allVars, Storage);
@@ -360,6 +370,9 @@ class Flatten {
 	}
 
 	function packTextures( name : String, vars : Array<TVar>, t : Type ) {
+		trace('[FLATTEN.packTextures] === Packing "${name}" with target type ${t} ===');
+		trace('[FLATTEN.packTextures] Checking ${vars.length} variables...');
+		
 		var alloc = new Array<Alloc>();
 		var g : TVar = {
 			id : Tools.allocVarId(),
@@ -370,10 +383,71 @@ class Flatten {
 		var pos = 0;
 		var samplers = [];
 		for( v in vars ) {
+			trace('[FLATTEN.packTextures]   Checking var "${v.name}" type=${v.type}');
+			
 			var count = 1;
 			if( !v.type.equals(t) ) {
 				switch( v.type ) {
-				case TChannel(_) if( t.match(TSampler(T2D,false)) ):
+				case TChannel(_):
+					trace('[FLATTEN.packTextures]     → Channel detected!');
+					// Channel matching depends on target type and channel's depth property
+					// ONLY do depth-aware routing if we're actually generating depth2d types
+					var doDepthRouting = t.match(TSamplerDepth(_,_));
+					
+					if (doDepthRouting) {
+						switch(t) {
+						case TSamplerDepth(T2D, false):
+							trace('[FLATTEN.packTextures]     → Target is TSamplerDepth, checking if channel is depth...');
+							// Depth sampler - only match if this channel is for depth
+							var isDepth = false;
+							if (v.qualifiers != null && v.hasQualifier(Depth)) {
+								isDepth = true;
+							} else {
+								// Fallback: check name
+								var fullPath = v.name;
+								var p = v.parent;
+								while (p != null) {
+									fullPath = p.name + "." + fullPath;
+									p = p.parent;
+								}
+								var n = fullPath.toLowerCase();
+								isDepth = n.indexOf("shadow") >= 0 || n.indexOf("depth") >= 0;
+							}
+							trace('[FLATTEN.packTextures]     → Channel isDepth=${isDepth}');
+							if (!isDepth) {
+								trace('[FLATTEN.packTextures]     → SKIP (not a depth channel)');
+								continue;  // Skip non-depth channels for depth samplers
+							}
+							trace('[FLATTEN.packTextures]     → MATCH! Allocating to depth array');
+						case TSampler(T2D, false):
+							trace('[FLATTEN.packTextures]     → Target is TSampler, checking if channel is depth...');
+							// Regular sampler - only match if this channel is NOT for depth
+							var isDepth = false;
+							if (v.qualifiers != null && v.hasQualifier(Depth)) {
+								isDepth = true;
+							} else {
+								// Fallback: check name
+								var fullPath = v.name;
+								var p = v.parent;
+								while (p != null) {
+									fullPath = p.name + "." + fullPath;
+									p = p.parent;
+								}
+								var n = fullPath.toLowerCase();
+								isDepth = n.indexOf("shadow") >= 0 || n.indexOf("depth") >= 0;
+							}
+							trace('[FLATTEN.packTextures]     → Channel isDepth=${isDepth}');
+							if (isDepth) {
+								trace('[FLATTEN.packTextures]     → SKIP (this is a depth channel, belongs in depth array)');
+								continue;  // Skip depth channels for regular samplers
+							}
+							trace('[FLATTEN.packTextures]     → MATCH! Allocating to regular array');
+						default:
+						}
+					} else {
+						// Depth routing disabled - all channels go to regular samplers
+						trace('[FLATTEN.packTextures]     → Depth routing disabled, treating as regular sampler');
+					}
 				case TArray(t2,SConst(n)) if( t2.equals(t) ):
 					count = n;
 				default:
@@ -404,8 +478,11 @@ class Flatten {
 			g.qualifiers.push(Sampler(samplers.join(",")));
 		}
 		if( alloc.length > 0 ) {
+			trace('[FLATTEN.packTextures] === Result: ${alloc.length} allocations, adding "${name}" to output ===');
 			outVars.push(g);
 			allocData.set(g, alloc);
+		} else {
+			trace('[FLATTEN.packTextures] === Result: ZERO allocations, "${name}" NOT added to output ===');
 		}
 		return alloc;
 	}
@@ -573,11 +650,11 @@ class Flatten {
 		}
 	}
 
-	function addTextureFormat(dim,arr,rw=0) {
+	function addTextureFormat(dim,arr,rw=0,isDepth=false) {
 		for( f in textureFormats )
-			if( f.dim == dim && f.arr == arr && f.rw == rw )
+			if( f.dim == dim && f.arr == arr && f.rw == rw && f.isDepth == isDepth )
 				return;
-		textureFormats.push({ dim : dim, arr : arr, rw : rw });
+		textureFormats.push({ dim : dim, arr : arr, rw : rw, isDepth : isDepth });
 	}
 
 	function gatherVar( v : TVar ) {
@@ -592,12 +669,56 @@ class Flatten {
 			default: 0;
 			}
 			addTextureFormat(dim,arr,rw);
+		case TSamplerDepth(dim, arr):
+			// Depth samplers are tracked separately - they'll be packed as TSamplerDepth
+			addTextureFormat(dim, arr, 0, true);
 		case TChannel(_):
-			addTextureFormat(T2D,false);
+			// DEBUG: Check qualifier state and full path
+			var hasDepthQual = v.qualifiers != null && v.hasQualifier(Depth);
+			var fullPath = v.name;
+			var p = v.parent;
+			while (p != null) {
+				fullPath = p.name + "." + fullPath;
+				p = p.parent;
+			}
+			trace('[FLATTEN.gatherVar] Channel "${v.name}" fullPath="${fullPath}" hasDepthQualifier=${hasDepthQual}');
+			if( v.qualifiers != null ) {
+				trace('[FLATTEN.gatherVar]   Qualifiers: ${v.qualifiers}');
+			}
+			
+			// Check if this is a shadow/depth channel by @depth qualifier or variable name
+			var isDepthChannel = false;
+			if (v.qualifiers != null) {
+				for (q in v.qualifiers) {
+					switch (q) {
+					case Depth:
+						isDepthChannel = true;
+						break;
+					default:
+					}
+				}
+			}
+			// Fallback: check variable name for common depth/shadow patterns
+			// This handles cases where qualifier is lost during linking
+			if (!isDepthChannel) {
+				var n = fullPath.toLowerCase();  // Use full path, not just name
+				isDepthChannel = n.indexOf("shadow") >= 0 || 
+				                 n.indexOf("depth") >= 0;
+			}
+			
+			// Phase 2: Enable depth2d generation with proper sampling code
+			// depth2d textures require .sample_compare() or .read() instead of .sample()
+			var useDepth2d = true;  // Enabled for Phase 2 implementation
+			if (!useDepth2d) isDepthChannel = false;
+			
+			trace('[FLATTEN.gatherVar]   Final isDepthChannel=${isDepthChannel} (by ${hasDepthQual ? "qualifier" : "name"}) useDepth2d=${useDepth2d}');
+			addTextureFormat(T2D, false, 0, isDepthChannel);
 		case TArray(type, _):
 			switch ( type ) {
 			case TSampler(dim, arr):
 				addTextureFormat(dim, arr, 0);
+			case TSamplerDepth(dim, arr):
+				addTextureFormat(dim, arr, 0, true);
 			case TRWTexture(dim, arr, chans):
 				addTextureFormat(dim, arr, chans);
 			default:

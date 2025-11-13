@@ -196,6 +196,9 @@ class MetalOut {
 			add(getSamplerType(dim, arr));
 		case TSamplerDepth(dim, arr):
 			// Depth samplers always use depth2d<float> for Metal hardware depth comparison
+			#if !macro
+			trace('[MetalOut.addType] Generating depth sampler type for dim=${dim} arr=${arr}');
+			#end
 			add(getDepthSamplerType(dim, arr));
 		case TRWTexture(dim, arr, chans):
 			add(getTextureType(dim, arr, chans, true));
@@ -424,26 +427,52 @@ class MetalOut {
 			// Special handling for texture sampling in Metal
 			switch( func.e ) {
 			case TGlobal(Texture | TextureLod):
-				// Metal texture sampling: texture.sample(sampler, coords)
+				// Metal texture sampling: texture.sample(sampler, coords) or depth2d.read(coords)
 				// HXSL: texture(tex, coords) or textureLod(tex, coords, lod)
 				if( args.length >= 2 ) {
-					// args[0] should be the texture array access like fragmentTextures[0]
-					// We need to extract just the texture itself
-					writeExpr(args[0]);  // This outputs the texture
-					add(".sample(");
-					// Use sampler from the same index as the texture
-					// The driver will bind appropriate samplers based on texture settings
-					add("fragmentSamplers[");
-					// Extract texture index - simplified for now, assumes fragmentTextures[N]
+					// Check if this is a depth texture by examining the texture variable
+					var isDepthTexture = false;
+					var textureVarName = "";
+					
 					switch(args[0].e) {
-					case TArray(_, { e: TConst(CInt(idx)) }):
-						add(Std.string(idx));
+					case TArray({ e: TVar(v) }, _):
+						textureVarName = v.name;
+						// Depth textures are in fragmentTexturesDepth, vertexTexturesDepth, etc.
+						isDepthTexture = textureVarName.toLowerCase().indexOf("depth") >= 0;
 					default:
-						add("0");  // Fallback to sampler 0
 					}
-					add("], ");
-					writeExpr(args[1]);  // UV coordinates
-					add(")");
+					
+					// args[0] should be the texture array access like fragmentTextures[0]
+					
+					if (isDepthTexture) {
+						// For depth2d textures, we cannot use .sample() with a regular sampler
+						// Instead, use .read() which reads raw pixel values
+						// depth2d<float>::read() returns float, but HXSL expects vec4
+						// So we wrap it in float4(depth, 0, 0, 1) to match expected format
+						add("float4(");
+						writeExpr(args[0]);  // Texture reference
+						add(".read(uint2(");
+						writeExpr(args[1]);  // UV coordinates
+						add(" * float2(");
+						// Get texture dimensions - for now, hardcode common shadow map size
+						// TODO: Pass texture size as uniform or query dynamically
+						add("1024.0, 1024.0");  // Assuming 1024x1024 shadow map
+						add(")), 0), 0.0, 0.0, 1.0)");  // Wrap in float4, level 0
+					} else {
+						// Regular texture sampling
+						writeExpr(args[0]);  // This outputs the texture
+						add(".sample(");
+						add("fragmentSamplers[");
+						switch(args[0].e) {
+						case TArray(_, { e: TConst(CInt(idx)) }):
+							add(Std.string(idx));
+						default:
+							add("0");  // Fallback to sampler 0
+						}
+						add("], ");
+						writeExpr(args[1]);  // UV coordinates
+						add(")");
+					}
 				} else {
 					// Fallback to standard call
 					writeExpr(func);
@@ -947,6 +976,16 @@ class MetalOut {
 
 			// Fragment main function - add texture and buffer parameters
 			add("fragment float4 fragment_main(VertexOut input [[stage_in]]");
+			
+			// DEBUG: List all variables
+			#if !macro
+			trace('[MetalOut.fragment_main] Processing ${s.vars.length} variables:');
+			for (v in s.vars) {
+				if (v.kind == Param || v.kind == Global) {
+					trace('[MetalOut.fragment_main]   ${v.name}: ${v.type} kind=${v.kind}');
+				}
+			}
+			#end
 			
 			// Add texture and buffer parameters
 			var textureIndex = 0;

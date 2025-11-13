@@ -98,6 +98,23 @@ class Linker {
 			if( !v.type.equals(v2.type) )
 				error("'" + path + "' type does not match : " + v.type.toString() + " should be " + v2.type.toString(),p);
 		}
+		// Merge qualifiers - preserve important ones like Depth from either variable
+		if( v.qualifiers != null ) {
+			for( q in v.qualifiers ) {
+				switch( q ) {
+				case Depth:
+					// Always preserve Depth qualifier
+					if( v2.qualifiers == null ) v2.qualifiers = [];
+					if( !v2.hasQualifier(Depth) ) v2.qualifiers.push(Depth);
+				default:
+				}
+			}
+		}
+		
+		// DEBUG: Verify qualifier was preserved
+		if( v2.qualifiers != null && v2.hasQualifier(Depth) ) {
+			trace('[LINKER.mergeVar] Depth qualifier preserved on "${v2.name}"');
+		}
 	}
 
 	function allocVar( v : TVar, p : Position, ?shaderName : String, ?path : String, ?parent : AllocatedVar ) : AllocatedVar {
@@ -118,6 +135,20 @@ class Linker {
 				case Name(n): key = n;
 				default:
 				}
+		
+		// DEBUG: Track @depth qualifier on Channel vars
+		if( v.type != null ) {
+			switch( v.type ) {
+			case TChannel(_):
+				var hasDepth = v.qualifiers != null && v.hasQualifier(Depth);
+				trace('[LINKER.allocVar] Channel var "${v.name}" key="${key}" hasDepth=${hasDepth}');
+				if( hasDepth && v.qualifiers != null ) {
+					trace('[LINKER.allocVar]   Qualifiers: ${v.qualifiers}');
+				}
+			default:
+			}
+		}
+		
 		var ukey = key.toLowerCase();
 		var v2 = varMap.get(ukey);
 		var vname = v.name;
@@ -352,6 +383,20 @@ class Linker {
 
 	public function link( shadersData : Array<ShaderData> ) : ShaderData {
 		debug("---------------------- LINKING -----------------------");
+		
+		// DEBUG: Log all shaders being linked
+		trace('[LINKER.link] Linking ${shadersData.length} shaders:');
+		for (s in shadersData) {
+			trace('[LINKER.link]   Shader: ${s.name}');
+			// Look for depth-qualified variables
+			for (v in s.vars) {
+				if (v.type.match(TChannel(_)) || v.type.match(TSampler(_,_))) {
+					var hasDepth = v.qualifiers != null && v.hasQualifier(Depth);
+					trace('[LINKER.link]     Var: ${v.name} type=${v.type} hasDepth=${hasDepth}');
+				}
+			}
+		}
+		
 		varMap = new Map();
 		varIdMap = new Map();
 		allVars = new Array();
