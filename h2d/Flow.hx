@@ -906,6 +906,18 @@ class Flow extends Object {
 		s.setParentContainer(this);
 	}
 
+	override function scrollToPos( pt : h2d.col.Point ) {
+		if( overflow == Scroll || overflow == Hidden ) {
+			var pt = globalToLocal(pt);
+			if( pt.y < 0 )
+				scrollPosY += pt.y;
+			else if( pt.y > calculatedHeight )
+				scrollPosY += pt.y - calculatedHeight;
+			return true;
+		}
+		return false;
+	}
+
 	#if domkit
 	override function getChildRefPosition( first : Bool ) {
 		if( !first ) {
@@ -1073,20 +1085,27 @@ class Flow extends Object {
 		}
 	}
 
+	public function makeBackground(tile) {
+		return new h2d.ScaleGrid(tile, borderLeft, borderTop, borderRight, borderBottom);
+	}
+
+	function buildBackground(tile) {
+		var background = makeBackground(tile);
+		addChildAt(background, 0);
+		getProperties(background).isAbsolute = true;
+		this.background = background;
+		if( !needReflow ) {
+			background.width = flowCeil(calculatedWidth);
+			background.height = flowCeil(calculatedHeight);
+		}
+	}
+
 	function set_backgroundTile(t) {
 		if( backgroundTile == t )
 			return t;
 		if( t != null ) {
-			if( background == null ) {
-				var background = new h2d.ScaleGrid(t, borderLeft, borderTop, borderRight, borderBottom);
-				addChildAt(background, 0);
-				getProperties(background).isAbsolute = true;
-				this.background = background;
-				if( !needReflow ) {
-					background.width = flowCeil(calculatedWidth);
-					background.height = flowCeil(calculatedHeight);
-				}
-			}
+			if( background == null )
+				buildBackground(t);
 			background.tile = t;
 		} else {
 			if( background != null ) {
@@ -1297,6 +1316,9 @@ class Flow extends Object {
 		var paddingTop = getPad(paddingTop,0);
 		var paddingBottom = getPad(paddingBottom,0);
 
+		if( scrollBar != null )
+			scrollBar.visible = true;
+
 		switch(layout) {
 		case Horizontal:
 			var halign = horizontalAlign == null ? Left : horizontalAlign;
@@ -1405,7 +1427,7 @@ class Flow extends Object {
 
 			// position all not absolute nodes
 			forChildren(function(i, p, c) {
-				if( p.autoSizeWidth != null )
+				if( p.autoSizeWidth != null || p.autoSizeHeight != null )
 					calcSize(p, c);
 				var br = false;
 				if( ((multiline && x - startX + p.calculatedWidth > maxInWidth) || p.lineBreak) && x - startX > 0 ) {
@@ -1603,7 +1625,7 @@ class Flow extends Object {
 
 			// position all not absolute nodes
 			forChildren(function(i, p, c) {
-				if( p.autoSizeHeight != null )
+				if( p.autoSizeWidth != null || p.autoSizeHeight != null )
 					calcSize(p, c);
 				var br = false;
 				if( ((multiline && y - startY + p.calculatedHeight > maxInHeight) || p.lineBreak) && y - startY > 0 ) {
@@ -1811,7 +1833,6 @@ class Flow extends Object {
 			if( contentHeight <= calculatedHeight )
 				scrollBar.visible = false;
 			else {
-				scrollBar.visible = true;
 				scrollBar.minHeight = scrollInnerHeight;
 				scrollBarCursor.minHeight = hxd.Math.imax(1, Std.int(scrollInnerHeight * (1 - (contentHeight - scrollInnerHeight)/contentHeight)));
 				updateScrollCursor();

@@ -51,6 +51,8 @@ class Camera {
 	public var jitterOffsetX : Float = 0.;
 	public var jitterOffsetY : Float = 0.;
 
+	public var reverseDepth = false;
+
 	var minv : Matrix;
 	var mcamInv : Matrix;
 	var mprojInv : Matrix;
@@ -204,14 +206,13 @@ class Camera {
 	**/
 
 	inline public function getUp() : h3d.Vector {
-		var up = new h3d.Vector(); 
+		var up = new h3d.Vector();
 		if ( directions == null ) {
 			directions = new h3d.Matrix();
 			directions._44 = 0;
 		}
 		if ( directions._44 == 0 )
 			calcDirections();
-		
 		up.x = directions._31;
 		up.y = directions._32;
 		up.z = directions._33;
@@ -418,9 +419,9 @@ class Camera {
 			var scale = zoom / Math.tan(halfFovX);
 			m._11 = scale;
 			m._22 = scale * screenRatio;
-			m._33 = zFar / (zFar - zNear);
+			m._33 = reverseDepth ? -zNear / (zFar - zNear) : zFar / (zFar - zNear);
 			m._34 = 1;
-			m._43 = -(zNear * zFar) / (zFar - zNear);
+			m._43 = reverseDepth ? (zNear * zFar) / (zFar - zNear) : -(zNear * zFar) / (zFar - zNear);
 
 			m._31 = jitterOffsetX;
 			m._32 = jitterOffsetY;
@@ -475,11 +476,19 @@ class Camera {
 	}
 
 	public function distanceToDepth( dist : Float ) {
-		return ((zFar + zNear - 2.0 * zNear * zFar / hxd.Math.clamp(dist, zNear, zFar)) / (zFar - zNear) + 1.0) / 2.0;
+		var invDist = 1.0 / hxd.Math.clamp(dist, zNear, zFar);
+		var fDivN = zFar / zNear;
+		var a = reverseDepth ? fDivN - 1 : 1 - fDivN;
+		var b = reverseDepth ? 1.0 / zFar : 1.0 / zNear;
+		return (zFar / a) * (invDist - b);
 	}
 
 	public function depthToDistance( depth : Float ) {
-		return (hxd.Math.clamp(depth, 0, 1) * zFar - zNear * zFar) / (zFar - zNear);
+		var d = hxd.Math.clamp(depth);
+		var fDivN = zFar/zNear;
+		var a = reverseDepth ? fDivN - 1 : 1 - fDivN;
+		var b = reverseDepth ? 1.0 / zFar : 1.0 / zNear;
+		return 1.0 / (a / zFar * d + b);
 	}
 
 	public function load( cam : Camera ) {
@@ -502,6 +511,8 @@ class Camera {
 			follow = null;
 		viewX = cam.viewX;
 		viewY = cam.viewY;
+		rightHanded = cam.rightHanded;
+		reverseDepth = cam.reverseDepth;
 		update();
 	}
 

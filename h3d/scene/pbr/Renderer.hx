@@ -198,6 +198,14 @@ class Renderer extends h3d.scene.Renderer {
 			pbrLightPass.enableLights = true;
 		}
 		ctx.pbrLightPass = pbrLightPass;
+
+		var defaultVec = new h3d.Vector(0.0, 0.0, 0.0);
+		ctx.setGlobal("mainLightColor", defaultVec);
+		ctx.setGlobal("mainLightPower", 0);
+		ctx.setGlobal("mainLightPos", defaultVec);
+		ctx.setGlobal("mainLightDir", new h3d.Vector(0.0, 0.0, 1.0));
+		ctx.setGlobal("mainLightShadowMap", null);
+		ctx.setGlobal("mainLightViewProj", h3d.Matrix.I());
 	}
 
 	inline function cullPasses( passes : h3d.pass.PassList, f : h3d.col.Collider -> Bool ) {
@@ -229,14 +237,15 @@ class Renderer extends h3d.scene.Renderer {
 	}
 
 	function lighting() {
-
+		var oldReverseDepth = ctx.useReverseDepth;
+		ctx.useReverseDepth = false;
 		begin(Shadows);
 		var ls = Std.downcast(getLightSystem(), h3d.scene.pbr.LightSystem);
 		var count = ctx.engine.drawCalls;
 		if( ls != null ) drawShadows(ls);
 		if( ctx.lightSystem != null ) ctx.lightSystem.drawPasses = ctx.engine.drawCalls - count;
 		end();
-
+		ctx.useReverseDepth = oldReverseDepth;
 		if (ls != null) {
 			while (ls.lightingShaders.length != 0)
 				ls.lightingShaders.pop();
@@ -287,9 +296,18 @@ class Renderer extends h3d.scene.Renderer {
 		end();
 	}
 
+	inline function shouldDoIndirect() : Bool {
+		return indirectEnv && ((env != null && env.power > 0.0) || skyMode == Background || skyMode == CustomColor);
+	}
+
+	inline function isIndirectSkyOnly() : Bool {
+		return env == null || env.power <= 0.0;
+	}
+
 	function doIndirectLighting() {
-		if( !renderLightProbes() && indirectEnv && env != null && env.power > 0.0 ) {
+		if( !renderLightProbes() && shouldDoIndirect() ) {
 			pbrProps.isScreen = true;
+			pbrIndirect.skyOnly = isIndirectSkyOnly();
 			pbrIndirect.drawIndirectDiffuse = true;
 			pbrIndirect.drawIndirectSpecular = true;
 			pbrOut.render();
@@ -316,8 +334,9 @@ class Renderer extends h3d.scene.Renderer {
 		clear(0);
 
 		// Default Env & SkyBox
-		if( indirectEnv && env != null && env.power > 0.0 ) {
+		if( shouldDoIndirect() ) {
 			pbrProps.isScreen = true;
+			pbrIndirect.skyOnly = isIndirectSkyOnly();
 			pbrIndirect.drawIndirectDiffuse = true;
 			pbrIndirect.drawIndirectSpecular = true;
 			pbrOut.render();
@@ -428,6 +447,8 @@ class Renderer extends h3d.scene.Renderer {
 
 	override function computeStatic() {
 		var light = @:privateAccess ctx.lights;
+		var oldReverseDepth = ctx.useReverseDepth;
+		ctx.useReverseDepth = false;
 		var passes = get("shadow");
 		if (!shadows)
 			passes.clear();
@@ -440,6 +461,7 @@ class Renderer extends h3d.scene.Renderer {
 			}
 			light = light.next;
 		}
+		ctx.useReverseDepth = oldReverseDepth;
 	}
 
 	function initTextures() {
@@ -469,12 +491,22 @@ class Renderer extends h3d.scene.Renderer {
 		ctx.setGlobal("ldrMap", textures.ldr);
 		ctx.setGlobal("velocity", textures.velocity);
 		ctx.setGlobal("global.time", ctx.time);
-		ctx.setGlobal("camera.position", ctx.camera.pos);
-		ctx.setGlobal("camera.inverseViewProj", ctx.camera.getInverseViewProj());
-		ctx.setGlobal("camera.inverseView", ctx.camera.getInverseView());
+		ctx.setGlobal("DIFFUSE_ONLY", renderMode == LightProbe);
+		if(ctx.camera != null){
+			ctx.setGlobal("camera.position", ctx.camera.pos);
+			ctx.setGlobal("camera.inverseViewProj", ctx.camera.getInverseViewProj());
+			ctx.setGlobal("camera.inverseView", ctx.camera.getInverseView());
+		}
 	}
 
 	function beginPbr() {
+		#if render_graph
+		if ( dumpFrame == hxd.Timer.frameCount ) {
+			h3d.impl.RenderGraph.start();
+			dumpFrame = -1;
+		}
+		#end
+
 		var props : RenderProps = props;
 		// reset tonemap shaders
 		var s = @:privateAccess tonemap.pass.shaders;
@@ -593,10 +625,10 @@ class Renderer extends h3d.scene.Renderer {
 	override function render() {
 		beginPbr();
 		setTarget(textures.depth);
-		ctx.engine.clearF(new h3d.Vector4(1));
+		ctx.engine.clearF(new h3d.Vector4(getDepthClearValue()));
 
 		setTargets(getPbrRenderTargets(false));
-		clear(0, 1, 0);
+		clear(0, getDepthClearValue(), 0);
 
 		setTargets(getPbrRenderTargets(true));
 
@@ -637,6 +669,7 @@ class Renderer extends h3d.scene.Renderer {
 		begin(BeforeTonemapping);
 		draw("beforeTonemappingDecal");
 		draw("beforeTonemapping");
+		draw("volumetricOverlay");
 		end();
 
 		setTarget(textures.ldr);
@@ -711,6 +744,7 @@ class Renderer extends h3d.scene.Renderer {
 			slides.shader.shadowMapCube = shadowMap;
 			slides.shader.shadowIsCube = shadowMap.flags.has(Cube);
 			slides.shader.shadowMapChannel = R;
+			slides.shader.HAS_VELOCITY = textures.velocity != null;
 			slides.shader.velocity = textures.velocity;
 			pbrProps.isScreen = true;
 			slides.render();
@@ -735,6 +769,15 @@ class Renderer extends h3d.scene.Renderer {
 			hxd.Window.getInstance().removeEventTarget(onEvent);
 		}
 		mark("vsync");
+		#if render_graph
+		h3d.impl.RenderGraph.end();
+		#end
+	}
+
+	override function mark(step : String) {
+		#if render_graph
+		h3d.impl.RenderGraph.mark(step);
+		#end
 	}
 
 	var debugPushPos : { x : Float, y : Float }
@@ -803,6 +846,13 @@ class Renderer extends h3d.scene.Renderer {
 		toneMode = props.tone;
 		exposure = props.exposure;
 	}
+
+	#if render_graph
+	var dumpFrame = -1;
+	public function dump() {
+		dumpFrame = hxd.Timer.frameCount+1;
+	}
+	#end
 
 	#if editor
 	override function editProps() {

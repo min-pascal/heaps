@@ -40,9 +40,6 @@ class Texture {
 	public var startingMip : Int = 0;
 	public var lodBias : Float = 0.;
 	public var mipLevels(get, never) : Int;
-	public var depthBias(default, set) : Float = 0.;
-	public var slopeScaledBias(default, set) : Float = 0.;
-	public var depthClamp : Bool = false;
 	var customMipLevels : Int;
 
 	/**
@@ -201,22 +198,6 @@ class Texture {
 		name = n;
 	}
 
-	public function set_depthBias(v : Float) {
-		if ( v != depthBias ) {
-			depthBias = v;
-			h3d.Engine.getCurrent().onTextureBiasChanged(this);
-		}
-		return depthBias;
-	}
-
-	public function set_slopeScaledBias(v : Float) {
-		if ( v != slopeScaledBias ) {
-			slopeScaledBias = v;
-			h3d.Engine.getCurrent().onTextureBiasChanged(this);
-		}
-		return slopeScaledBias;
-	}
-
 	function set_mipMap(m:MipMap) {
 		bits = (bits & ~(3 << 0)) | (Type.enumIndex(m) << 0);
 		return mipMap = m;
@@ -262,14 +243,18 @@ class Texture {
 		var color = new h3d.Vector4(r,g,b,a);
 		if( layer < 0 ) {
 			for( i in 0...layerCount ) {
-				engine.pushTarget(this, i);
+				for ( j in 0...mipLevels ) {
+					engine.pushTarget(this, i, j);
+					engine.clearF(color);
+					engine.popTarget();
+				}
+			}
+		} else {
+			for ( i in 0...mipLevels ) {
+				engine.pushTarget(this, layer, i);
 				engine.clearF(color);
 				engine.popTarget();
 			}
-		} else {
-			engine.pushTarget(this, layer);
-			engine.clearF(color);
-			engine.popTarget();
 		}
 	}
 
@@ -281,14 +266,18 @@ class Texture {
 			color |= Std.int(hxd.Math.clamp(alpha)*255) << 24;
 			if( layer < 0 ) {
 				for( i in 0...layerCount ) {
-					engine.pushTarget(this, i);
+					for ( j in 0...mipLevels ) {
+						engine.pushTarget(this, i, j);
+						engine.clear(color);
+						engine.popTarget();
+					}
+				}
+			} else {
+				for ( i in 0...mipLevels ) {
+					engine.pushTarget(this, layer, i);
 					engine.clear(color);
 					engine.popTarget();
 				}
-			} else {
-				engine.pushTarget(this, layer);
-				engine.clear(color);
-				engine.popTarget();
 			}
 		} else {
 			var p = hxd.Pixels.alloc(width, height, nativeFormat);

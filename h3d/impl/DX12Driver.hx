@@ -413,8 +413,11 @@ class DX12Driver extends h3d.impl.Driver {
 	var currentPipelineState : PipelineState;
 	var lastVertexGlobalBind : Int = -1;
 	var lastFragmentGlobalBind : Int = -1;
+	var useDepthClamp : Bool = false;
 
 	public static var INITIAL_RT_COUNT = 1024;
+	public static var INITIAL_SRV_COUNT = 1024;
+	public static var INITIAL_SAMPLER_COUNT = 1024;
 	public static var INITIAL_BUMP_ALLOCATOR_SIZE = 2 * 1024 * 1024;
 	public static var BUFFER_COUNT = #if console 3 #else 2 #end;
 	public static var DEVICE_NAME = null;
@@ -449,8 +452,8 @@ class DX12Driver extends h3d.impl.Driver {
 			f.allocator = new CommandAllocator(DIRECT);
 			f.commandList = new CommandList(DIRECT, f.allocator, null);
 			f.commandList.close();
-			f.shaderResourceCache = new ManagedHeapArray(CBV_SRV_UAV, 1024);
-			f.samplerCache = new ManagedHeapArray(SAMPLER, 1024);
+			f.shaderResourceCache = new ManagedHeapArray(CBV_SRV_UAV, INITIAL_SRV_COUNT);
+			f.samplerCache = new ManagedHeapArray(SAMPLER, INITIAL_SAMPLER_COUNT);
 			if ( f.bumpAllocator != null )
 				f.bumpAllocator.release();
 			f.bumpAllocator = new BumpAllocator(INITIAL_BUMP_ALLOCATOR_SIZE);
@@ -758,23 +761,25 @@ class DX12Driver extends h3d.impl.Driver {
 	}
 
 	function getDepthView( depthBuffer : h3d.mat.Texture, readOnly : Bool ) {
-		var res = depthBuffer == null ? frame.depthBuffer : depthBuffer.t.res;
+		if ( depthBuffer == null )
+			depthBuffer = getDefaultDepthBuffer();
 		var depthView = depthStenciViews.alloc(1);
 		var viewDesc = new DepthStencilViewDesc();
 		viewDesc.arraySize = 1;
 		viewDesc.mipSlice = 0;
 		viewDesc.firstArraySlice = 0;
-		viewDesc.format = (depthBuffer == null) ? D24_UNORM_S8_UINT : toDxgiDepthFormat(depthBuffer.format);
+		viewDesc.format = toDxgiDepthFormat(depthBuffer.format);
 		viewDesc.viewDimension = TEXTURE2D;
 		if ( readOnly ) {
 			viewDesc.flags.set(READ_ONLY_DEPTH);
 			viewDesc.flags.set(READ_ONLY_STENCIL);
 		}
-		Driver.createDepthStencilView(res, viewDesc, depthView);
+		Driver.createDepthStencilView(depthBuffer.t.res, viewDesc, depthView);
 		var depths = tmp.depthStencils;
 		depths[0] = depthView;
 		depthEnabled = true;
-		if ( depthBuffer != null && (depthBuffer.t.state & ( DEPTH_READ | DEPTH_WRITE ) == COMMON) )
+		var acceptedState = readOnly ? DEPTH_READ | DEPTH_WRITE : DEPTH_WRITE;
+		if ( depthBuffer.t.state & acceptedState == COMMON )
 			transition(depthBuffer.t, readOnly ? DEPTH_READ : DEPTH_WRITE);
 		return depths;
 	}
@@ -926,6 +931,14 @@ class DX12Driver extends h3d.impl.Driver {
 		pipelineBuilder.setDepth(depthBuffer);
 	}
 
+	override function setDepthClamp( enabled : Bool ) {
+		useDepthClamp = enabled;
+	}
+
+	override function setDepthBias( depthBias : Float, slopeScaledBias : Float ) {
+		pipelineBuilder.setDepthBias(depthBias, slopeScaledBias);
+	}
+
 	override function setRenderZone(x:Int, y:Int, width:Int, height:Int) {
 		if( width < 0 && height < 0 && x == 0 && y == 0 ) {
 			tmp.rect.left = 0;
@@ -951,6 +964,7 @@ class DX12Driver extends h3d.impl.Driver {
 
 	override function capturePixels(tex:h3d.mat.Texture, layer:Int, mipLevel:Int, ?region:h2d.col.IBounds):hxd.Pixels {
 		var pixels : hxd.Pixels;
+		var oldRTs = [for ( rt in currentRenderTargets) rt];
 		if (region != null) {
 			if (region.xMax > tex.width) region.xMax = tex.width;
 			if (region.yMax > tex.height) region.yMax = tex.height;
@@ -970,6 +984,11 @@ class DX12Driver extends h3d.impl.Driver {
 			pixels = hxd.Pixels.alloc(w, h, tex.format);
 			captureTexPixels(pixels, tex, layer, mipLevel);
 		}
+
+		if(oldRTs.length > 0){
+			setRenderTargets(oldRTs);
+		}
+
 		return pixels;
 	}
 
@@ -1048,6 +1067,7 @@ class DX12Driver extends h3d.impl.Driver {
 		return null;
 	}
 
+	static final SHADER_ARGS : Array<String>= [/*"-Zi"*/];
 	function compileSource( sh : hxsl.RuntimeShader.RuntimeShaderData, profile, baseRegister, rootStr = "" ) {
 		var out = new hxsl.HlslOut();
 		out.baseRegister = baseRegister;
@@ -1055,11 +1075,14 @@ class DX12Driver extends h3d.impl.Driver {
 			sh.code = out.run(sh.data);
 			sh.code = rootStr + sh.code;
 		}
-		var bytes = getBinaryPayload(sh.code, profile);
+		var key = profile;
+		for ( arg in SHADER_ARGS )
+			key += arg;
+		var bytes = getBinaryPayload(sh.code, key);
 		if( bytes == null ) {
-			bytes = compiler.compile(sh.code, profile, []);
+			bytes = compiler.compile(sh.code, profile, SHADER_ARGS);
 			if( shaderCache != null )
-				shaderCache.saveCompiledShader(sh.code, bytes, profile);
+				shaderCache.saveCompiledShader(sh.code, bytes, key);
 		}
 		return bytes;
 	}
@@ -1487,6 +1510,7 @@ class DX12Driver extends h3d.impl.Driver {
 	function allocGPU( size : Int, heapType, state, uav=false ) {
 		var desc = new ResourceDesc();
 		var flags = new haxe.EnumFlags();
+		flags.set(CREATE_NOT_ZEROED);
 		desc.dimension = BUFFER;
 		desc.width = size;
 		desc.height = 1;
@@ -1657,6 +1681,7 @@ class DX12Driver extends h3d.impl.Driver {
 		var isRT = t.flags.has(Target);
 
 		var flags = new haxe.EnumFlags();
+		flags.set(CREATE_NOT_ZEROED);
 		var desc = makeTextureDesc(t);
 		var td = new TextureData();
 		td.format = desc.format;
@@ -1690,6 +1715,7 @@ class DX12Driver extends h3d.impl.Driver {
 		var td = new TextureData();
 		var desc = new ResourceDesc();
 		var flags = new haxe.EnumFlags();
+		flags.set(CREATE_NOT_ZEROED);
 		desc.dimension = TEXTURE2D;
 		desc.width = b.width;
 		desc.height = b.height;
@@ -1832,7 +1858,7 @@ class DX12Driver extends h3d.impl.Driver {
 	function hasBuffersTexturesChanged ( buf : h3d.shader.Buffers.ShaderBuffers, regs : ShaderRegisters ) : Bool {
 		var changed = regs.lastHeapCount != heapCount;
 		if( !changed ) {
-			for( i in 0...regs.texturesCount )
+			for( i in 0...regs.texturesTypes.length )
 				if( regs.lastTextures[i] != ( buf.tex[i] != null ? buf.tex[i].t : null ) || regs.lastTexturesBits[i] != ( buf.tex[i] != null ? buf.tex[i].bits : -1 ) ) {
 					changed = true;
 					break;
@@ -1842,20 +1868,20 @@ class DX12Driver extends h3d.impl.Driver {
 	}
 
 	var srvRingBuf : hl.CArray<SrvArgs>;
-	var srvHead : Int = 1;
-	var srvTail : Int = 0;
+	var srvHead : haxe.atomic.AtomicInt = new haxe.atomic.AtomicInt(1);
+	var srvTail : haxe.atomic.AtomicInt = new haxe.atomic.AtomicInt(0);
 	var srvThreadLaunched : Bool = false;
 
 	inline function computeSRVBufferDistance() : Int {
-		return (srvHead + (~(srvTail - 1 ) & 0xFF)) & 0xFF;
+		return (srvHead.load() + (~(srvTail.load() - 1 ) & 0xFF)) & 0xFF;
 	}
 
 	inline function processSRV() {
-		var index = (srvTail + 1) & 0xFF;
+		var index = (srvTail.load() + 1) & 0xFF;
 		var args = srvRingBuf[index];
 		Driver.createShaderResourceView(args.res, args.resourceDesc, args.srvAddr);
 		Driver.createSampler(args.samplerDesc, args.samplerAddr);
-		srvTail = index;
+		srvTail.store(index);
 	}
 
 	function runThread() {
@@ -1887,14 +1913,25 @@ class DX12Driver extends h3d.impl.Driver {
 			srvThreadLaunched = true;
 			srvRingBuf = hl.CArray.alloc(SrvArgs, 256);
 			#if !console
-			sys.thread.Thread.create(runThread);
+			var thread = sys.thread.Thread.create(runThread);
+			#if (haxe_ver >= 5) thread.name = "DX12"; #else thread.setName("DX12"); #end
 			#end
 		}
 
 		// Check if ring buffer is full
-		while ( computeSRVBufferDistance() == 0 ) {};
+		var count = 0;
+		while( true ) {
+			if( computeSRVBufferDistance() != 0 ) break;
+			count++;
+			if( count > 100000 ) {
+				// we sometimes get thread starvation by just doing the while loop.
+				// this might allow the SRV thread to catch up and get atomic locks.
+				Sys.sleep(0);
+				count = 0;
+			}
+		};
 
-		var srvArgs = srvRingBuf[srvHead];
+		var srvArgs = srvRingBuf[srvHead.load()];
 
 		if( t.flags.has(Cube) ) {
 			var desc = unsafeCastTo(srvArgs.resourceDesc, TexCubeSRV);
@@ -1946,13 +1983,14 @@ class DX12Driver extends h3d.impl.Driver {
 		desc.addressU = desc.addressV = desc.addressW = switch( t.wrap ) {
 			case Clamp: CLAMP;
 			case Repeat: WRAP;
+			case Mirror: MIRROR;
 		}
 		desc.mipLODBias = t.lodBias;
 
 		srvArgs.res = t.t.res;
 		srvArgs.srvAddr = srvAddr;
 		srvArgs.samplerAddr = samplerAddr;
-		srvHead = (srvHead + 1) & 0xFF;
+		srvHead.store((srvHead.load() + 1) & 0xFF);
 
 		#if console
 		processSRV();
@@ -2060,7 +2098,7 @@ class DX12Driver extends h3d.impl.Driver {
 
 						switch( pt ) {
 						case TRWTexture(dim,arr,chans):
-							var tdim : hxsl.Ast.TexDimension = t.flags.has(Cube) ? TCube : T2D;
+							var tdim : hxsl.Ast.TexDimension = t.flags.has(Cube) ? TCube : dim;
 							var fmt;
 							if( (arr != t.flags.has(IsArray)) || dim != tdim )
 								throw "Texture format does not match: "+t+"["+t.format+"] should be "+hxsl.Ast.Tools.toString(pt);
@@ -2080,6 +2118,9 @@ class DX12Driver extends h3d.impl.Driver {
 							}
 							desc.mipSlice = 0;
 							desc.planeSlice = 0;
+							if(t.flags.has(Is3D)){
+								desc.wSlice = t.get_layerCount();
+							}
 							if( arr ) {
 								desc.firstArraySlice = 0;
 								desc.arraySize = 1;
@@ -2198,7 +2239,10 @@ class DX12Driver extends h3d.impl.Driver {
 	}
 
 	override function selectMaterial( pass : h3d.mat.Pass ) @:privateAccess {
+		var depthClamp = pass.depthClamp;
+		pass.depthClamp = depthClamp || useDepthClamp;
 		pipelineBuilder.selectMaterial(pass);
+		pass.depthClamp = depthClamp;
 		var st = pass.stencil;
 		if( st != null && curStencilRef != st.reference ) {
 			curStencilRef = st.reference;
@@ -2269,9 +2313,9 @@ class DX12Driver extends h3d.impl.Driver {
 		p.depthStencilDesc.depthEnable = pass.depthTest != Always;
 		p.depthStencilDesc.depthWriteMask = !pass.depthWrite || !depthEnabled ? ZERO : ALL;
 		p.depthStencilDesc.depthFunc = COMP[pass.depthTest.getIndex()];
+		p.rasterizerState.depthClipEnable = !pass.depthClamp;
 		p.rasterizerState.depthBias = Std.int(depth.bias);
 		p.rasterizerState.slopeScaledDepthBias = depth.slopeScaledBias;
-		p.rasterizerState.depthClipEnable = !depth.clamp;
 
 		var bl = p.blendState;
 		for( i in 0...rtCount ) {
@@ -2447,7 +2491,6 @@ class DX12Driver extends h3d.impl.Driver {
 		}
 		flushTransitions();
 		frame.commandList.drawIndexedInstanced(ntriangles * 3,1,startIndex,0,0);
-		flushResources();
 	}
 
 	override function drawInstanced(ibuf:Buffer, commands:InstanceBuffer) {
@@ -2467,10 +2510,9 @@ class DX12Driver extends h3d.impl.Driver {
 			flushTransitions();
 			frame.commandList.drawIndexedInstanced(commands.indexCount, commands.commandCount, commands.startIndex, 0, 0);
 		}
-		flushResources();
 	}
 
-	function flushResources() {
+	override function flushShaderBuffers() {
 		if( frame.shaderResourceViews.available < 128 || frame.samplerViews.available < 64 ) {
 			frame.shaderResourceViews = frame.shaderResourceCache.next();
 			frame.samplerViews = frame.samplerCache.next();
@@ -2480,22 +2522,33 @@ class DX12Driver extends h3d.impl.Driver {
 			arr[1] = @:privateAccess frame.samplerViews.heap;
 			frame.commandList.setDescriptorHeaps(arr);
 			inline function rebindGlobal(bindSlot, desc) {
-				var srv = frame.shaderResourceViews.alloc(1);
-				Driver.createConstantBufferView(desc, srv);
-				if( currentShader.isCompute )
-					frame.commandList.setComputeRootDescriptorTable(bindSlot, frame.shaderResourceViews.toGPU(srv));
-				else
-					frame.commandList.setGraphicsRootDescriptorTable(bindSlot, frame.shaderResourceViews.toGPU(srv));
+				if ( bindSlot >= 0 ) {
+					var srv = frame.shaderResourceViews.alloc(1);
+					Driver.createConstantBufferView(desc, srv);
+					if( currentShader.isCompute )
+						frame.commandList.setComputeRootDescriptorTable(bindSlot, frame.shaderResourceViews.toGPU(srv));
+					else
+						frame.commandList.setGraphicsRootDescriptorTable(bindSlot, frame.shaderResourceViews.toGPU(srv));
+				}
 			}
-			if ( lastVertexGlobalBind >= 0 )
-				rebindGlobal(lastVertexGlobalBind, tmp.vertexGlobalDesc);
-			if ( lastFragmentGlobalBind >= 0 )
-				rebindGlobal(lastFragmentGlobalBind, tmp.fragmentGlobalDesc);
+
+			rebindGlobal(lastVertexGlobalBind, tmp.vertexGlobalDesc);
+			rebindGlobal(lastFragmentGlobalBind, tmp.fragmentGlobalDesc);
 		}
 	}
 
 	function flushSRV() {
-		while ( computeSRVBufferDistance() != 1 ) {};
+		var count = 0;
+		while( true ) {
+			if( computeSRVBufferDistance() == 1 ) break;
+			count++;
+			if( count > 100000 ) {
+				// we sometimes get thread starvation by just doing the while loop.
+				// this might allow the SRV thread to catch up and get atomic locks.
+				Sys.sleep(0);
+				count = 0;
+			}
+		}
 	}
 
 	function flushFrame( onResize : Bool = false ) {
@@ -2538,14 +2591,14 @@ class DX12Driver extends h3d.impl.Driver {
 		}
 	}
 
-	override function computeDispatch( x : Int = 1, y : Int = 1, z : Int = 1 ) {
+	override function computeDispatch( x : Int = 1, y : Int = 1, z : Int = 1, barrier : Bool = true ) {
 		flushTransitions();
 		frame.commandList.dispatch(x,y,z);
-		uavBarrier();
-		flushResources();
+		if( barrier )
+			memoryBarrier();
 	}
 
-	function uavBarrier() {
+	override function memoryBarrier() {
 		var barrier = tmp.barrier;
 		barrier.resource = null;
 		@:privateAccess barrier.type = UAV;

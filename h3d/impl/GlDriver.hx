@@ -109,6 +109,7 @@ class GlDriver extends Driver {
 	var lastActiveIndex : Int = 0;
 	var curColorMask = -1;
 	var currentDivisor : Array<Int> = [for( i in 0...32 ) 0];
+	var useDepthClamp = false;
 
 	var bufferWidth : Int;
 	var bufferHeight : Int;
@@ -638,19 +639,21 @@ class GlDriver extends Driver {
 					}
 			}
 		case Textures:
-			var tcount = s.textures.length;
+			var imageBindingIdx = 0;
 			for( i in 0...s.textures.length ) {
 				var t = buf.tex[i];
 				var pt = s.textures[i];
 				if( t == null || t.isDisposed() ) {
 					switch( pt.t ) {
-					case TSampler(TCube, false):
-						t = h3d.mat.Texture.defaultCubeTexture();
-					case TSampler(_, false):
-						var color = h3d.mat.Defaults.loadingTextureColor;
-						t = h3d.mat.Texture.fromColor(color, (color >>> 24) / 255);
-					default:
-						throw "Missing texture";
+						case TSampler(TCube, false):
+							t = h3d.mat.Texture.defaultCubeTexture();
+						case TSampler(T3D, false):
+							t = h3d.mat.Texture3D.default3DTexture();
+						case TSampler(_, false):
+							var color = h3d.mat.Defaults.loadingTextureColor;
+							t = h3d.mat.Texture.fromColor(color, (color >>> 24) / 255);
+						default:
+							throw "Missing texture";
 					}
 				}
 				if( t != null && t.t == null && t.realloc != null ) {
@@ -674,7 +677,7 @@ class GlDriver extends Driver {
 				#if !js
 				switch( pt.t ) {
 				case TRWTexture(dim,arr,chans):
-					var tdim : hxsl.Ast.TexDimension = t.flags.has(Cube) ? TCube : T2D;
+					var tdim : hxsl.Ast.TexDimension = t.flags.has(Cube) ? TCube : dim;
 					var fmt;
 					if( (arr != t.flags.has(IsArray)) || dim != tdim )
 						fmt = 0;
@@ -698,7 +701,7 @@ class GlDriver extends Driver {
 					#if (hlsdl < version("1.15.0"))
 					throw "RWTextures support requires hlsdl 1.15+";
 					#else
-					gl.bindImageTexture(i, cast t.t.t, 0, false, 0, GL.READ_WRITE, fmt);
+					gl.bindImageTexture(imageBindingIdx++, cast t.t.t, 0, tdim == T3D ? true : false, 0, GL.READ_WRITE, fmt);
 					#end
 					boundTextures[i] = null;
 					continue;
@@ -738,6 +741,7 @@ class GlDriver extends Driver {
 					var w = TWRAP[wrap];
 					gl.texParameteri(mode, GL.TEXTURE_WRAP_S, w);
 					gl.texParameteri(mode, GL.TEXTURE_WRAP_T, w);
+					gl.texParameteri(mode, GL.TEXTURE_WRAP_R, w);
 				}
 				if( t.t.startMip != t.startingMip ) {
 					gl.texParameteri(pt.mode, GL.TEXTURE_BASE_LEVEL, t.startingMip);
@@ -890,6 +894,16 @@ class GlDriver extends Driver {
 				gl.depthFunc(COMPARE[cmp]);
 			}
 		}
+
+		#if !js
+		if ( (!useDepthClamp && diff & Pass.depthClamp_mask != 0) ) {
+			if ( Pass.getDepthClamp(bits) != 0 )
+				gl.enable(GL.DEPTH_CLAMP);
+			else
+				gl.disable(GL.DEPTH_CLAMP);
+		}
+		#end
+
 		curMatBits = bits;
 	}
 
@@ -1206,6 +1220,7 @@ class GlDriver extends Driver {
 			fmt = GL.DEPTH_STENCIL;
 		case Depth32:
 			tt.internalFmt = GL.DEPTH_COMPONENT32F;
+			tt.pixelFmt = GL.FLOAT;
 		default:
 			throw "Unsupported depth format "+	t.format;
 		}
@@ -1259,7 +1274,10 @@ class GlDriver extends Driver {
 		gl.bindBuffer(type, vb);
 		if( b.vertices * b.format.stride == 0 ) throw "assert";
 		#if js
-		gl.bufferData(type, b.getMemSize(), b.flags.has(Dynamic) ? GL.DYNAMIC_DRAW : GL.STATIC_DRAW);
+		var size = b.getMemSize();
+		if ( b.flags.has(UniformBuffer) )
+			hxd.Math.imin(1024, size);
+		gl.bufferData(type, size, b.flags.has(Dynamic) ? GL.DYNAMIC_DRAW : GL.STATIC_DRAW);
 		#elseif hl
 		gl.bufferDataSize(type, b.getMemSize(), b.flags.has(Dynamic) ? GL.DYNAMIC_DRAW : GL.STATIC_DRAW);
 		#else
@@ -1585,7 +1603,7 @@ class GlDriver extends Driver {
 			data.push(offIndex);
 			data.push(instanceCount);
 		}
-		b.data = data;
+		b.cpuData = data;
 	}
 
 	override function uploadInstanceBufferBytes(b : InstanceBuffer, startVertex : Int, vertexCount : Int, buf : haxe.io.Bytes, bufPos : Int ) {
@@ -1626,7 +1644,7 @@ class GlDriver extends Driver {
 				arr[0] = commands.offset * InstanceBuffer.ELEMENT_SIZE;
 				var commandOffset : hl.Bytes = (cast arr : hl.NativeArray<hl.Bytes>)[0];
 			#else
-				var commandOffset : hl.Bytes = hl.Api.unsafeCast(commands.offset * InstanceBuffer.ELEMENT_SIZE);
+				var commandOffset : hl.Bytes = hl.Api.unsafeCast(haxe.Int64.make(0, commands.offset * InstanceBuffer.ELEMENT_SIZE));
 			#end
 			gl.bindBuffer(GL.DRAW_INDIRECT_BUFFER, commands.data);
 			#if (hlsdl >= version("1.15.0"))
@@ -1636,7 +1654,7 @@ class GlDriver extends Driver {
 					arr[0] = commands.countOffset * 4;
 					var countOffset : hl.Bytes = (cast arr : hl.NativeArray<hl.Bytes>)[0];
 				#else
-					var countOffset : hl.Bytes = hl.Api.unsafeCast(commands.countOffset * 4);
+					var countOffset : hl.Bytes = hl.Api.unsafeCast(haxe.Int64.make(0, commands.countOffset * 4));
 				#end
 				gl.bindBuffer(GL.PARAMETER_BUFFER, commands.countBuffer);
 				gl.multiDrawElementsIndirectCount(drawMode, kind, commandOffset, countOffset, commands.commandCount, 0);
@@ -1647,7 +1665,7 @@ class GlDriver extends Driver {
 			return;
 		}
 		#end
-		var args : Array<Int> = commands.data;
+		var args : Array<Int> = commands.cpuData;
 		if( args != null ) {
 			var p = 0;
 			for( i in 0...Std.int(args.length/3) )
@@ -1791,9 +1809,6 @@ class GlDriver extends Driver {
 		else
 			gl.framebufferTexture2D(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0, tex.flags.has(Cube) ? CUBE_FACES[layer] : GL.TEXTURE_2D, tex.t.t, mipLevel);
 
-		setPolygonOffset( tex.depthBuffer );
-		setDepthClamp( tex.depthBuffer );
-
 		if( tex.depthBuffer != null && depthBinding != NotBound ) {
 			// Depthbuffer and stencilbuffer are combined in one buffer, created with GL.DEPTH_STENCIL
 			if(tex.depthBuffer.hasStencil() && tex.depthBuffer.format == Depth24Stencil8) {
@@ -1871,9 +1886,6 @@ class GlDriver extends Driver {
 
 		gl.framebufferTexture2D(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, null, 0);
 
-		setPolygonOffset( depthBuffer );
-		setDepthClamp( depthBuffer );
-
 		if(depthBuffer.hasStencil() && depthBuffer.format == Depth24Stencil8) {
 			gl.framebufferTexture2D(GL.FRAMEBUFFER, GL.DEPTH_STENCIL_ATTACHMENT, GL.TEXTURE_2D,@:privateAccess depthBuffer.t.t, 0);
 		} else {
@@ -1897,26 +1909,22 @@ class GlDriver extends Driver {
 		#end
 	}
 
-	override function onTextureBiasChanged( t : h3d.mat.Texture ) {
-		setPolygonOffset(t);
-	}
-
-	function setPolygonOffset( depthBuffer : h3d.mat.Texture ) {
-		if ( depthBuffer != null && ( depthBuffer.depthBias != 0 || depthBuffer.slopeScaledBias != 0 ) ) {
-			gl.enable(GL.POLYGON_OFFSET_FILL);
-			gl.polygonOffset(depthBuffer.slopeScaledBias, depthBuffer.depthBias);
-		}
-		else
-			gl.disable(GL.POLYGON_OFFSET_FILL);
-	}
-
-	function setDepthClamp( dephTexture : h3d.mat.Texture ) {
+	override function setDepthClamp( enabled : Bool ) {
 		#if !js
-		if ( dephTexture != null && dephTexture.depthClamp )
+		useDepthClamp = enabled;
+		if ( useDepthClamp )
 			gl.enable(GL.DEPTH_CLAMP);
 		else
 			gl.disable(GL.DEPTH_CLAMP);
 		#end
+	}
+
+	override function setDepthBias( depthBias : Float, slopeScaledBias : Float ) {
+		if ( depthBias != 0 || slopeScaledBias != 0 ) {
+			gl.enable(GL.POLYGON_OFFSET_FILL);
+			gl.polygonOffset(slopeScaledBias, depthBias);
+		} else
+			gl.disable(GL.POLYGON_OFFSET_FILL);
 	}
 
 	override function init( onCreate : Bool -> Void, forceSoftware = false ) {
@@ -2037,9 +2045,14 @@ class GlDriver extends Driver {
 
 	#if hl
 
-	override function computeDispatch(x:Int = 1, y:Int = 1, z:Int = 1) {
+	override function computeDispatch(x:Int = 1, y:Int = 1, z:Int = 1, barrier:Bool = true) {
 		GL.dispatchCompute(x,y,z);
-		GL.memoryBarrier(GL.BUFFER_UPDATE_BARRIER_BIT);
+		if( barrier )
+			memoryBarrier();
+	}
+
+	override function memoryBarrier(){
+		GL.memoryBarrier(GL.BUFFER_UPDATE_BARRIER_BIT | GL.TEXTURE_FETCH_BARRIER_BIT);
 	}
 
 	override function allocQuery(kind:QueryKind) {
@@ -2057,6 +2070,8 @@ class GlDriver extends Driver {
 			throw "use endQuery() for timestamp queries";
 		case Samples:
 			GL.beginQuery(GL.SAMPLES_PASSED, q.q);
+		case TimeElapsed:
+			GL.beginQuery(GL.TIME_ELAPSED, q.q);
 		}
 	}
 
@@ -2066,6 +2081,8 @@ class GlDriver extends Driver {
 			GL.queryCounter(q.q, GL.TIMESTAMP);
 		case Samples:
 			GL.endQuery(GL.SAMPLES_PASSED);
+		case TimeElapsed:
+			GL.endQuery(GL.TIME_ELAPSED);
 		}
 	}
 
@@ -2102,6 +2119,7 @@ class GlDriver extends Driver {
 	static var TWRAP = [
 		GL.CLAMP_TO_EDGE,
 		GL.REPEAT,
+		GL.MIRRORED_REPEAT,
 	];
 
 	static var FACES = [
