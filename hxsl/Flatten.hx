@@ -712,7 +712,8 @@ class Flatten {
 			
 			// Phase 2: Enable depth2d generation with proper sampling code
 			// depth2d textures require .sample_compare() or .read() instead of .sample()
-			var useDepth2d = true;  // Enabled for Phase 2 implementation
+			// Currently only supported for Metal backend
+			var useDepth2d = #if (!hlsdl && !js) true #else false #end;
 			if (!useDepth2d) isDepthChannel = false;
 			
 			trace('[FLATTEN.gatherVar]   Final isDepthChannel=${isDepthChannel} (by ${hasDepthQual ? "qualifier" : "name"}) useDepth2d=${useDepth2d}');

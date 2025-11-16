@@ -1920,11 +1920,13 @@ class GlDriver extends Driver {
 	}
 
 	override function setDepthBias( depthBias : Float, slopeScaledBias : Float ) {
+		#if !hlsdl
 		if ( depthBias != 0 || slopeScaledBias != 0 ) {
 			gl.enable(GL.POLYGON_OFFSET_FILL);
 			gl.polygonOffset(slopeScaledBias, depthBias);
 		} else
 			gl.disable(GL.POLYGON_OFFSET_FILL);
+		#end
 	}
 
 	override function init( onCreate : Bool -> Void, forceSoftware = false ) {
@@ -2071,7 +2073,9 @@ class GlDriver extends Driver {
 		case Samples:
 			GL.beginQuery(GL.SAMPLES_PASSED, q.q);
 		case TimeElapsed:
+			#if !hlsdl
 			GL.beginQuery(GL.TIME_ELAPSED, q.q);
+			#end
 		}
 	}
 
@@ -2082,7 +2086,9 @@ class GlDriver extends Driver {
 		case Samples:
 			GL.endQuery(GL.SAMPLES_PASSED);
 		case TimeElapsed:
+			#if !hlsdl
 			GL.endQuery(GL.TIME_ELAPSED);
+			#end
 		}
 	}
 
