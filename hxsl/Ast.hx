@@ -471,7 +471,7 @@ class Tools {
 
 	public static function isTexture( t : Type ) {
 		return switch( t ) {
-		case TSampler(_), TChannel(_), TRWTexture(_):
+		case TSampler(_), TSamplerDepth(_), TChannel(_), TRWTexture(_):
 			true;
 		default:
 			false;
