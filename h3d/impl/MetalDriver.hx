@@ -92,7 +92,7 @@ private class MetalNative {
 
 	// Shader compilation
 	public static function compile_shader(source:String, shaderType:Int):Dynamic { return null; }
-	public static function create_render_pipeline(vertexShader:Dynamic, fragmentShader:Dynamic, vertexDesc:String, blendSrc:Int, blendDst:Int, blendAlphaSrc:Int, blendAlphaDst:Int):Dynamic { return null; }
+	public static function create_render_pipeline(vertexShader:Dynamic, fragmentShader:Dynamic, vertexDesc:String, blendSrc:Int, blendDst:Int, blendAlphaSrc:Int, blendAlphaDst:Int, blendOp:Int, blendAlphaOp:Int):Dynamic { return null; }
 	public static function dispose_pipeline(pipeline:Dynamic):Void {}
 
 	// Render command encoder
@@ -740,7 +740,8 @@ class MetalDriver extends Driver {
 			compiledShader.vertex != null ? compiledShader.vertex.shader : null,
 			compiledShader.fragment != null ? compiledShader.fragment.shader : null,
 			vertexDesc,
-			blendSrc, blendDst, blendAlphaSrc, blendAlphaDst
+			blendSrc, blendDst, blendAlphaSrc, blendAlphaDst,
+					0, 0  // blendOp and blendAlphaOp (Add)
 		);
 		
 		if (pipeline != null) {
