@@ -410,7 +410,7 @@ class MetalOut {
 			}
 			add(";\n");
 		case TDiscard:
-			add(tabs + "discard;\n");
+			add(tabs + "discard_fragment();\n");
 		case TMeta(_, _, e):
 			// Metadata expressions - just output the inner expression
 			addExpr(e, tabs);
