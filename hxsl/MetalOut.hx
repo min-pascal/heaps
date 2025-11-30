@@ -489,20 +489,40 @@ class MetalOut {
 					var argType = args[0].t;
 					var needsExtraction = switch( argType ) {
 					case TMat4: true;
+					case TMat3x4: true;  // Also need extraction from 3x4 matrix
+					default: false;
+					};
+					
+					var isMat3x4 = switch( argType ) {
+					case TMat3x4: true;
 					default: false;
 					};
 					
 					if( needsExtraction ) {
-						// Extract upper-left 3x3 from 4x4 matrix
-						// float3x3(mat[0].xyz, mat[1].xyz, mat[2].xyz)
-						add("float3x3(");
-						add("float3(");
-						writeExpr(args[0]);
-						add("[0].xyz), float3(");
-						writeExpr(args[0]);
-						add("[1].xyz), float3(");
-						writeExpr(args[0]);
-						add("[2].xyz))");
+						if( isMat3x4 ) {
+							// Extract 3x3 from _mat3x4 struct
+							// _mat3x4 has fields a, b, c which are float4 rows
+							// We need a.xyz, b.xyz, c.xyz as columns of the 3x3
+							add("float3x3(");
+							add("float3(");
+							writeExpr(args[0]);
+							add(".a.xyz), float3(");
+							writeExpr(args[0]);
+							add(".b.xyz), float3(");
+							writeExpr(args[0]);
+							add(".c.xyz))");
+						} else {
+							// Extract upper-left 3x3 from 4x4 matrix
+							// float3x3(mat[0].xyz, mat[1].xyz, mat[2].xyz)
+							add("float3x3(");
+							add("float3(");
+							writeExpr(args[0]);
+							add("[0].xyz), float3(");
+							writeExpr(args[0]);
+							add("[1].xyz), float3(");
+							writeExpr(args[0]);
+							add("[2].xyz))");
+						}
 					} else {
 						// Standard constructor
 						add("float3x3(");
