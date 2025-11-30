@@ -726,6 +726,9 @@ class MetalDriver extends Driver {
 		
 		// Create blend hash (fits in 16 bits: 4 bits per parameter)
 		var blendHash = blendSrc | (blendDst << 4) | (blendAlphaSrc << 8) | (blendAlphaDst << 12);
+
+		// Create cache key combining stride, target format, depth state, and blend mode
+		var cacheKey = bufferStride | (targetFormat << 16) | ((hasDepth ? 1 : 0) << 24) | (blendHash << 25);
 		
 		// Check if we have a cached pipeline for this stride+format combination
 		var pipeline = compiledShader.pipelineCache.get(cacheKey);
