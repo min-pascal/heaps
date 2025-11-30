@@ -387,13 +387,11 @@ class Flatten {
 		var pos = 0;
 		var samplers = [];
 		for( v in vars ) {
-			trace('[FLATTEN.packTextures]   Checking var "${v.name}" type=${v.type}');
 			
 			var count = 1;
 			if( !v.type.equals(t) ) {
 				switch( v.type ) {
 				case TChannel(_):
-					trace('[FLATTEN.packTextures]     → Channel detected!');
 					// Channel matching depends on target type and channel's depth property
 					// ONLY do depth-aware routing if we're actually generating depth2d types
 					var doDepthRouting = t.match(TSamplerDepth(_,_));
@@ -401,7 +399,6 @@ class Flatten {
 					if (doDepthRouting) {
 						switch(t) {
 						case TSamplerDepth(T2D, false):
-							trace('[FLATTEN.packTextures]     → Target is TSamplerDepth, checking if channel is depth...');
 							// Depth sampler - only match if this channel is for depth
 							var isDepth = false;
 							if (v.qualifiers != null && v.hasQualifier(Depth)) {
@@ -417,14 +414,10 @@ class Flatten {
 								var n = fullPath.toLowerCase();
 								isDepth = n.indexOf("shadow") >= 0 || n.indexOf("depth") >= 0;
 							}
-							trace('[FLATTEN.packTextures]     → Channel isDepth=${isDepth}');
 							if (!isDepth) {
-								trace('[FLATTEN.packTextures]     → SKIP (not a depth channel)');
 								continue;  // Skip non-depth channels for depth samplers
 							}
-							trace('[FLATTEN.packTextures]     → MATCH! Allocating to depth array');
 						case TSampler(T2D, false):
-							trace('[FLATTEN.packTextures]     → Target is TSampler, checking if channel is depth...');
 							// Regular sampler - only match if this channel is NOT for depth
 							var isDepth = false;
 							if (v.qualifiers != null && v.hasQualifier(Depth)) {
@@ -440,17 +433,13 @@ class Flatten {
 								var n = fullPath.toLowerCase();
 								isDepth = n.indexOf("shadow") >= 0 || n.indexOf("depth") >= 0;
 							}
-							trace('[FLATTEN.packTextures]     → Channel isDepth=${isDepth}');
 							if (isDepth) {
-								trace('[FLATTEN.packTextures]     → SKIP (this is a depth channel, belongs in depth array)');
 								continue;  // Skip depth channels for regular samplers
 							}
-							trace('[FLATTEN.packTextures]     → MATCH! Allocating to regular array');
 						default:
 						}
 					} else {
 						// Depth routing disabled - all channels go to regular samplers
-						trace('[FLATTEN.packTextures]     → Depth routing disabled, treating as regular sampler');
 					}
 				case TArray(t2,SConst(n)) if( t2.equals(t) ):
 					count = n;
@@ -482,11 +471,9 @@ class Flatten {
 			g.qualifiers.push(Sampler(samplers.join(",")));
 		}
 		if( alloc.length > 0 ) {
-			trace('[FLATTEN.packTextures] === Result: ${alloc.length} allocations, adding "${name}" to output ===');
 			outVars.push(g);
 			allocData.set(g, alloc);
 		} else {
-			trace('[FLATTEN.packTextures] === Result: ZERO allocations, "${name}" NOT added to output ===');
 		}
 		return alloc;
 	}
@@ -685,9 +672,7 @@ class Flatten {
 				fullPath = p.name + "." + fullPath;
 				p = p.parent;
 			}
-			trace('[FLATTEN.gatherVar] Channel "${v.name}" fullPath="${fullPath}" hasDepthQualifier=${hasDepthQual}');
 			if( v.qualifiers != null ) {
-				trace('[FLATTEN.gatherVar]   Qualifiers: ${v.qualifiers}');
 			}
 			
 			// Check if this is a shadow/depth channel by @depth qualifier or variable name
@@ -716,7 +701,6 @@ class Flatten {
 			var useDepth2d = #if (!hlsdl && !js) true #else false #end;
 			if (!useDepth2d) isDepthChannel = false;
 			
-			trace('[FLATTEN.gatherVar]   Final isDepthChannel=${isDepthChannel} (by ${hasDepthQual ? "qualifier" : "name"}) useDepth2d=${useDepth2d}');
 			addTextureFormat(T2D, false, 0, isDepthChannel);
 		case TArray(type, _):
 			switch ( type ) {

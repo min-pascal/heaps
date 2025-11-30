@@ -113,7 +113,6 @@ class Linker {
 		
 		// DEBUG: Verify qualifier was preserved
 		if( v2.qualifiers != null && v2.hasQualifier(Depth) ) {
-			trace('[LINKER.mergeVar] Depth qualifier preserved on "${v2.name}"');
 		}
 	}
 
@@ -141,9 +140,7 @@ class Linker {
 			switch( v.type ) {
 			case TChannel(_):
 				var hasDepth = v.qualifiers != null && v.hasQualifier(Depth);
-				trace('[LINKER.allocVar] Channel var "${v.name}" key="${key}" hasDepth=${hasDepth}');
 				if( hasDepth && v.qualifiers != null ) {
-					trace('[LINKER.allocVar]   Qualifiers: ${v.qualifiers}');
 				}
 			default:
 			}
@@ -385,14 +382,11 @@ class Linker {
 		debug("---------------------- LINKING -----------------------");
 		
 		// DEBUG: Log all shaders being linked
-		trace('[LINKER.link] Linking ${shadersData.length} shaders:');
 		for (s in shadersData) {
-			trace('[LINKER.link]   Shader: ${s.name}');
 			// Look for depth-qualified variables
 			for (v in s.vars) {
 				if (v.type.match(TChannel(_)) || v.type.match(TSampler(_,_))) {
 					var hasDepth = v.qualifiers != null && v.hasQualifier(Depth);
-					trace('[LINKER.link]     Var: ${v.name} type=${v.type} hasDepth=${hasDepth}');
 				}
 			}
 		}
