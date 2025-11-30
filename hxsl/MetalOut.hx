@@ -196,9 +196,6 @@ class MetalOut {
 			add(getSamplerType(dim, arr));
 		case TSamplerDepth(dim, arr):
 			// Depth samplers always use depth2d<float> for Metal hardware depth comparison
-			#if !macro
-			trace('[MetalOut.addType] Generating depth sampler type for dim=${dim} arr=${arr}');
-			#end
 			add(getDepthSamplerType(dim, arr));
 		case TRWTexture(dim, arr, chans):
 			add(getTextureType(dim, arr, chans, true));
@@ -700,15 +697,27 @@ class MetalOut {
 			add(" }");
 		case TArray(e, index):
 			// Check if this is a texture array access - Metal doesn't support texture arrays in shader args
-			// So we treat tex[0] as just tex (the texture is bound to texture slot 0)
+			// So we treat tex[n] as tex_n (the texture is bound to texture slot n)
 			var isTextureArrayAccess = switch( e.e ) {
 			case TVar(v): isTextureType(v.type);
 			default: false;
 			};
 			
-			if( isTextureArrayAccess && switch(index.e) { case TConst(CInt(0)): true; default: false; } ) {
-				// Skip [0] for texture variables - just output the texture name
-				writeExpr(e);
+			if( isTextureArrayAccess ) {
+				switch(index.e) {
+				case TConst(CInt(idx)):
+					// Texture access with constant index - output tex_n for n > 0, or just tex for n == 0
+					writeExpr(e);
+					if (idx > 0) {
+						add("_" + idx);
+					}
+				default:
+					// Dynamic index - not supported, fall back to regular syntax (will error)
+					writeExpr(e);
+					add("[");
+					writeExpr(index);
+					add("]");
+				}
 			} else {
 				// Normal array access
 				writeExpr(e);
@@ -744,6 +753,18 @@ class MetalOut {
 				}
 			}
 		case TGlobal(g):
+			// Handle special functions that need declarations
+			switch(g) {
+			case Pack:
+				decl("static inline float4 pack(float v) {\n\tfloat4 c = fract(v * float4(1.0, 255.0, 65025.0, 16581375.0));\n\treturn c - c.yzww * float4(1.0/255.0, 1.0/255.0, 1.0/255.0, 0.0);\n}");
+			case Unpack:
+				decl("static inline float unpack(float4 c) {\n\treturn dot(c, float4(1.0, 1.0/255.0, 1.0/65025.0, 1.0/16581375.0));\n}");
+			case PackNormal:
+				decl("static inline float4 packNormal(float3 v) {\n\treturn float4((v + float3(1.0)) * float3(0.5), 1.0);\n}");
+			case UnpackNormal:
+				decl("static inline float3 unpackNormal(float4 v) {\n\treturn normalize((v.xyz - float3(0.5)) * float3(2.0));\n}");
+			default:
+			}
 			add(GLOBALS[g.getIndex()]);
 		case TParenthesis(e):
 			add("(");
@@ -788,20 +809,8 @@ class MetalOut {
 		isShadowShader = false;
 		for (v in s.vars) {
 			var lowerName = v.name.toLowerCase();
-			// Debug: log all variable names
-			try {
-				var f = sys.io.File.append("/tmp/metal_shader_vars.txt", false);
-				f.writeString('Shader "${s.name}" var: "${v.name}" (${v.kind})\n');
-				f.close();
-			} catch(e:Dynamic) {}
-			
 			if (lowerName.indexOf("shadow") >= 0) {
 				isShadowShader = true;
-				try {
-					var f = sys.io.File.append("/tmp/metal_shader_vars.txt", false);
-					f.writeString('  -> SHADOW SHADER DETECTED!\n');
-					f.close();
-				} catch(e:Dynamic) {}
 				break;
 			}
 		}
@@ -977,16 +986,6 @@ class MetalOut {
 			// Fragment main function - add texture and buffer parameters
 			add("fragment float4 fragment_main(VertexOut input [[stage_in]]");
 			
-			// DEBUG: List all variables
-			#if !macro
-			trace('[MetalOut.fragment_main] Processing ${s.vars.length} variables:');
-			for (v in s.vars) {
-				if (v.kind == Param || v.kind == Global) {
-					trace('[MetalOut.fragment_main]   ${v.name}: ${v.type} kind=${v.kind}');
-				}
-			}
-			#end
-			
 			// Add texture and buffer parameters
 			var textureIndex = 0;
 			var bufferIndex = 0;
@@ -996,7 +995,6 @@ class MetalOut {
 			for( v in s.vars ) {
 				if( v.kind == Param || v.kind == Global ) {
 					if( isTextureType(v.type) ) {
-						add(", ");
 						// Textures use [[texture(n)]] attribute
 						// Metal textures are bound individually, not as arrays in shader arguments
 						// The array access in HXSL (tex[0]) maps to individual texture bindings
@@ -1005,35 +1003,36 @@ class MetalOut {
 						case TArray(t, _): t;
 						default: v.type;
 						};
-						v.type = baseType;
 						
-						// Special handling for samplers to detect depth textures by name
-						switch(v.type) {
-						case TSampler(dim, arr):
-							// Debug: Save variable name for inspection
-							try {
-								var f = sys.io.File.append("/tmp/metal_texture_vars.txt", false);
-								f.writeString('Texture var: name="${v.name}" type=TSampler dim=$dim\n');
-								f.close();
-							} catch(e:Dynamic) {}
-							add(getSamplerType(dim, arr, v.name));
-						case TSamplerDepth(dim, arr):
-							// Depth samplers explicitly use depth texture types
-							try {
-								var f = sys.io.File.append("/tmp/metal_texture_vars.txt", false);
-								f.writeString('Depth texture var: name="${v.name}" type=TSamplerDepth dim=$dim\n');
-								f.close();
-							} catch(e:Dynamic) {}
-							add(getDepthSamplerType(dim, arr));
-						default:
-							addType(v.type);
+						// Get the array size - how many textures in this array
+						var arraySize = switch( v.type ) {
+						case TArray(_, SConst(n)): n;
+						default: 1;
+						};
+						
+						// Generate a parameter for each texture in the array
+						for (i in 0...arraySize) {
+							add(", ");
+							v.type = baseType;
+							
+							// Special handling for samplers to detect depth textures by name
+							switch(v.type) {
+							case TSampler(dim, arr):
+								add(getSamplerType(dim, arr, v.name));
+							case TSamplerDepth(dim, arr):
+								// Depth samplers explicitly use depth texture types
+								add(getDepthSamplerType(dim, arr));
+							default:
+								addType(v.type);
+							}
+							
+							v.type = old;
+							add(" ");
+							add(varName(v));
+							if (i > 0) add("_" + i);
+							add(" [[texture(" + textureIndex + ")]]");
+							textureIndex++;
 						}
-						
-						v.type = old;
-						add(" ");
-						add(varName(v));
-						add(" [[texture(" + textureIndex + ")]]");
-						textureIndex++;
 					}
 				}
 			}
