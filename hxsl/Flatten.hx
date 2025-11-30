@@ -63,14 +63,12 @@ class Flatten {
 			if( t.arr ) name += "Array";
 			if( t.isDepth ) name += "Depth";  // Add suffix for depth samplers
 			var samplerType = if( t.isDepth ) {
-				trace('[FLATTEN.packTextures] Creating TSamplerDepth for ${t.dim} isDepth=${t.isDepth}');
 				TSamplerDepth(t.dim, t.arr);
 			} else if( t.rw == 0 ) {
 				TSampler(t.dim, t.arr);
 			} else {
 				TRWTexture(t.dim, t.arr, t.rw);
 			};
-			trace('[FLATTEN.packTextures] Packing "${prefix}Textures${name}" with type ${samplerType}');
 			packTextures(prefix + "Textures" + name, allVars, samplerType);
 		}
 		packBuffers("buffers", allVars, Uniform);
@@ -374,8 +372,6 @@ class Flatten {
 	}
 
 	function packTextures( name : String, vars : Array<TVar>, t : Type ) {
-		trace('[FLATTEN.packTextures] === Packing "${name}" with target type ${t} ===');
-		trace('[FLATTEN.packTextures] Checking ${vars.length} variables...');
 		
 		var alloc = new Array<Alloc>();
 		var g : TVar = {
