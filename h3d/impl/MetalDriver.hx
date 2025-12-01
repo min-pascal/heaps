@@ -760,6 +760,7 @@ class MetalDriver extends Driver {
 			case TVec(2, VFloat): "float2";
 			case TVec(3, VFloat): "float3";
 			case TVec(4, VFloat): "float4";
+			case TBytes(n): "uchar" + n; // Bone indexes: uchar4 reads 4 bytes → 4 floats (0-255 range)
 			default: "float4";
 		};
 	}
