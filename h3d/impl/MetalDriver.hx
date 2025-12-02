@@ -987,9 +987,7 @@ class MetalDriver extends Driver {
 			// Check if this is depth-only rendering
 			if (depthBinding == DepthOnly) {
 				// Depth-only rendering (e.g., shadow maps)
-				trace("MetalDriver: Using depth-only render pass for texture: " + tex.name);
 				var metalDepthTexture:Dynamic = tex.t.t;
-				trace("MetalDriver: Depth texture pointer: " + metalDepthTexture + ", clearDepth: " + clearDepth);
 				currentRenderEncoder = MetalNative.begin_depth_render_pass(
 					currentCommandBuffer,
 					metalDepthTexture,
