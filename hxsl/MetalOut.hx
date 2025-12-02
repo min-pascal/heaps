@@ -102,6 +102,7 @@ class MetalOut {
 		set(ComputeVar_GlobalInvocation, "thread_position_in_grid");
 		set(ComputeVar_LocalInvocationIndex, "thread_index_in_threadgroup");
 		set(ComputeVar_WorkGroup, "threadgroup_position_in_grid");
+		set(Mod, "fmod");  // Metal uses fmod() for float modulo
 
 		for( g in gl )
 			KWDS.set(g, true);
@@ -613,9 +614,42 @@ class MetalOut {
 			case CString(s): add('"' + s + '"');
 			}
 		case TBinop(op, e1, e2):
-			// Special handling for vector * matrix operations in Metal
-			// where HXSL semantics differ from Metal's
-			if( op == OpMult ) {
+			// Handle special operators in Metal
+			var handled = false;
+			switch(op) {
+			// Handle float modulo: Metal uses fmod() function instead of % operator
+			case OpMod if (e.t != TInt):
+				add("fmod(");
+				writeExpr(e1);
+				add(", ");
+				writeExpr(e2);
+				add(")");
+				handled = true;
+			case OpAssignOp(OpMod) if (e.t != TInt):
+				// a %= b  ->  a = fmod(a, b)
+				writeExpr(e1);
+				add(" = fmod(");
+				writeExpr(e1);
+				add(", ");
+				writeExpr(e2);
+				add(")");
+				handled = true;
+			// Handle OpAssignOp(OpMult) for vec *= mat cases
+			// Convert vec *= mat to vec = vec * mat so proper matrix handling applies
+			case OpAssignOp(innerOp) if (innerOp == OpMult):
+				var isMat = switch(e2.t) { case TMat3x4 | TMat3 | TMat4: true; default: false; };
+				var isVec = switch(e1.t) { case TVec(_, VFloat): true; default: false; };
+				if (isVec && isMat) {
+					// Rewrite: e1 *= e2  ->  e1 = e1 * e2
+					writeExpr(e1);
+					add(" = ");
+					// Create a synthetic multiplication expression and write it
+					writeExpr({ e: TBinop(OpMult, e1, e2), t: e.t, p: e.p });
+					handled = true;
+				}
+			case OpMult:
+				// Special handling for vector * matrix operations in Metal
+				// where HXSL semantics differ from Metal's
 				// Check for vector * matrix multiplication
 				// HXSL uses: vec * mat (row-major semantics)
 				// Metal uses: mat * vec (column-major semantics)
@@ -642,6 +676,7 @@ class MetalOut {
 					add(" * ");
 					writeExpr(e2);
 					add(")");
+					handled = true;
 				} else {
 					// Check for vec3 * mat3x4 case
 					// In HXSL: vec3 * mat3x4 = vec3
@@ -674,17 +709,12 @@ class MetalOut {
 						add(").b.w, (");
 						writeExpr(e2);
 						add(").c.w))");
-					} else {
-						add("(");
-						writeExpr(e1);
-						add(" ");
-						add(Printer.opStr(op));
-						add(" ");
-						writeExpr(e2);
-						add(")");
+						handled = true;
 					}
 				}
-			} else {
+			default:
+			}
+			if (!handled) {
 				add("(");
 				writeExpr(e1);
 				add(" ");
