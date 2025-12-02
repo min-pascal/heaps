@@ -801,9 +801,9 @@ class MetalDriver extends Driver {
 			b.vbuf = allocBuffer(b);
 		}
 
-		var stride = b.format.stride;
-		var offsetBytes = startVertex * stride;
-		var sizeBytes = vertexCount * stride;
+		var strideBytes = b.format.strideBytes;
+		var offsetBytes = startVertex * strideBytes;
+		var sizeBytes = vertexCount * strideBytes;
 
 		// Convert haxe.io.Bytes to hl.Bytes
 		var hlBytes = @:privateAccess data.b;
