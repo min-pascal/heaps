@@ -119,6 +119,10 @@ class MetalOut {
 	var isCompute : Bool;
 	var isFragment : Bool;
 	var allNames : Map<String,Int>;
+	
+	// MRT (Multiple Render Targets) support
+	var outputCount : Int;
+	var outputVars : Array<TVar>;
 
 	public var varNames : Map<Int,String>;
 
@@ -412,6 +416,36 @@ class MetalOut {
 		case TMeta(_, _, e):
 			// Metadata expressions - just output the inner expression
 			addExpr(e, tabs);
+		case TFor(v, it, loop):
+			// For loop support
+			locals.set(v.id, v);
+			switch( it.e ) {
+			case TBinop(OpInterval, e1, e2):
+				add(tabs + "for(int " + varName(v) + " = ");
+				writeExpr(e1);
+				add("; " + varName(v) + " < ");
+				writeExpr(e2);
+				add("; " + varName(v) + "++) ");
+				addExpr(loop, tabs);
+				add("\n");
+			default:
+				throw "Unsupported for loop iterator";
+			}
+		case TWhile(econd, loop, normalWhile):
+			if( normalWhile ) {
+				add(tabs + "while( ");
+				writeExpr(econd);
+				add(" ) ");
+				addExpr(loop, tabs);
+				add("\n");
+			} else {
+				// do-while loop
+				add(tabs + "do ");
+				addExpr(loop, tabs);
+				add(" while( ");
+				writeExpr(econd);
+				add(" );\n");
+			}
 		default:
 			add(tabs);
 			writeExpr(e);
@@ -883,6 +917,11 @@ class MetalOut {
 		add("static inline float2 screenToUv(float2 screen) {\n");
 		add("\treturn screen * float2(0.5, -0.5) + float2(0.5, 0.5);\n");
 		add("}\n\n");
+		
+		add("// Helper function to convert UV texture coordinates to screen coordinates\n");
+		add("static inline float2 uvToScreen(float2 uv) {\n");
+		add("\treturn uv * float2(2.0, -2.0) + float2(-1.0, 1.0);\n");
+		add("}\n\n");
 
 		// Generate proper input/output structures
 		if( isVertex ) {
@@ -1017,6 +1056,16 @@ class MetalOut {
 			add("}\n");
 
 		} else if( isFragment ) {
+			// Count fragment outputs for MRT support
+			outputCount = 0;
+			outputVars = [];
+			for( v in s.vars ) {
+				if( v.kind == Output ) {
+					outputVars.push(v);
+					outputCount++;
+				}
+			}
+			
 			// Fragment input (from vertex) - includes varyings (Var kind) from vertex shader
 			add("struct VertexOut {\n");
 			add("\tfloat4 position [[position]];\n");
@@ -1033,8 +1082,27 @@ class MetalOut {
 			}
 			add("};\n\n");
 
-			// Fragment main function - add texture and buffer parameters
-			add("fragment float4 fragment_main(VertexOut input [[stage_in]]");
+			// Fragment output structure for MRT
+			if (outputCount > 1) {
+				add("struct FragmentOut {\n");
+				var colorIndex = 0;
+				for( v in outputVars ) {
+					add("\t");
+					addType(v.type);
+					add(" ");
+					add(varName(v));
+					add(" [[color(" + colorIndex + ")]];\n");
+					colorIndex++;
+				}
+				add("};\n\n");
+			}
+
+			// Fragment main function - return type depends on MRT
+			if (outputCount > 1) {
+				add("fragment FragmentOut fragment_main(VertexOut input [[stage_in]]");
+			} else {
+				add("fragment float4 fragment_main(VertexOut input [[stage_in]]");
+			}
 			
 			// Add texture and buffer parameters
 			var textureIndex = 0;
@@ -1173,13 +1241,27 @@ class MetalOut {
 			// Process shader expression
 			addExpr(f.expr, "\t");
 
-			// Return the output color
-			for( v in s.vars ) {
-				if( v.kind == Output ) {
-					add("\treturn ");
+			// Return the output - MRT uses struct, single output returns directly
+			if (outputCount > 1) {
+				// MRT: Return a struct with all outputs
+				add("\tFragmentOut _output;\n");
+				for( v in outputVars ) {
+					add("\t_output.");
+					add(varName(v));
+					add(" = ");
 					add(varName(v));
 					add(";\n");
-					break;
+				}
+				add("\treturn _output;\n");
+			} else {
+				// Single output: return directly
+				for( v in s.vars ) {
+					if( v.kind == Output ) {
+						add("\treturn ");
+						add(varName(v));
+						add(";\n");
+						break;
+					}
 				}
 			}
 

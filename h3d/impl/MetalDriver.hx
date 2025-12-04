@@ -52,10 +52,12 @@ private class CompiledMetalShader {
 	public var pipelineKey : String;
 	
 	// Cache of pipeline states per buffer format stride
-	public var pipelineCache : Map<Int, Dynamic>; // stride -> pipelineState
+	public var pipelineCache : Map<Int, Dynamic>; // stride -> pipelineState (legacy)
+	public var pipelineCacheStr : Map<String, Dynamic>; // full config string -> pipelineState
 
 	public function new() {
 		pipelineCache = new Map();
+		pipelineCacheStr = new Map();
 	}
 }
 
@@ -99,6 +101,7 @@ private class MetalNative {
 	public static function begin_render_pass(cmdBuffer:Dynamic, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
 	public static function resume_render_pass(cmdBuffer:Dynamic):Dynamic { return null; }
 	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int, depthTexture:Dynamic):Dynamic { return null; }
+	public static function begin_mrt_render_pass(cmdBuffer:Dynamic, textures:hl.NativeArray<Dynamic>, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
 	public static function begin_depth_render_pass(cmdBuffer:Dynamic, depthTexture:Dynamic, clearDepth:Float):Dynamic { return null; }
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
 	public static function set_depth_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool):Void {}
@@ -347,20 +350,36 @@ class MetalDriver extends Driver {
 			MetalNative.end_encoding(currentRenderEncoder);
 			currentRenderEncoder = null;
 			
-			// Recreate render pass with new clear color
-			var tex = currentTargets[0];
-			var metalTexture:Dynamic = tex.t.t;
-			var metalDepthTexture:Dynamic = (tex.depthBuffer != null) ? tex.depthBuffer.t.t : null;
-			
-			currentRenderEncoder = MetalNative.begin_texture_render_pass(
-				currentCommandBuffer,
-				metalTexture,
-				clearColor.r, clearColor.g, clearColor.b, clearColor.a,
-				metalDepthTexture
-			);
-			
-			// Mark texture as cleared so subsequent setRenderTarget calls don't clear it again
-			tex.flags.set(WasCleared);
+			// Check if this is MRT (multiple render targets) or single target
+			if (currentTargets.length > 1) {
+				// MRT - recreate with begin_mrt_render_pass
+				var metalTextures = new hl.NativeArray<Dynamic>(currentTargets.length);
+				for (i in 0...currentTargets.length) {
+					var tex = currentTargets[i];
+					if (tex != null && tex.t != null) {
+						metalTextures[i] = tex.t.t;
+					}
+				}
+				currentRenderEncoder = MetalNative.begin_mrt_render_pass(
+					currentCommandBuffer, metalTextures,
+					clearColor.r, clearColor.g, clearColor.b, clearColor.a
+				);
+			} else {
+				// Single target - recreate with begin_texture_render_pass
+				var tex = currentTargets[0];
+				var metalTexture:Dynamic = tex.t.t;
+				var metalDepthTexture:Dynamic = (tex.depthBuffer != null) ? tex.depthBuffer.t.t : null;
+				
+				currentRenderEncoder = MetalNative.begin_texture_render_pass(
+					currentCommandBuffer,
+					metalTexture,
+					clearColor.r, clearColor.g, clearColor.b, clearColor.a,
+					metalDepthTexture
+				);
+				
+				// Mark texture as cleared so subsequent setRenderTarget calls don't clear it again
+				tex.flags.set(WasCleared);
+			}
 		}
 	}
 
@@ -587,6 +606,12 @@ class MetalDriver extends Driver {
 		if (shader.fragment != null && shader.fragment.data != null) {
 			var fragmentSource = shaderCompiler.run(shader.fragment.data);
 			
+			// Save shader source for debugging
+			try {
+				var path = "/tmp/metal_fragment_shader_" + shader.id + ".metal";
+				sys.io.File.saveContent(path, fragmentSource);
+			} catch(e:Dynamic) {}
+			
 			#if debug
 			if (compiled.fragment == null) compiled.fragment = new MetalShaderContext(null);
 			compiled.fragment.debugSource = fragmentSource;
@@ -714,9 +739,10 @@ class MetalDriver extends Driver {
 	
 	function getOrCreatePipeline(compiledShader:CompiledMetalShader, shader:hxsl.RuntimeShader, bufferStride:Int, 
 	                             blendSrc:Int, blendDst:Int, blendAlphaSrc:Int, blendAlphaDst:Int):Dynamic {
-		// CRITICAL: Include render target pixel format AND depth buffer state AND blend mode in cache key
+		// CRITICAL: Include render target pixel format, depth buffer state, blend mode, AND MRT count in cache key
 		// Different pipelines needed for different target formats (e.g., BGRA8 vs R16F),
-		// different depth buffer configurations (with/without depth), and different blend modes
+		// different depth buffer configurations (with/without depth), different blend modes,
+		// and different MRT configurations (1 vs 3 render targets)
 		var targetFormat = (currentTargets.length > 0 && currentTargets[0] != null) 
 			? getMetalTextureFormat(currentTargets[0].format)
 			: 1; // 1 = BGRA8Unorm for backbuffer
@@ -724,14 +750,16 @@ class MetalDriver extends Driver {
 		// Check if we have a depth buffer attached to current render target
 		var hasDepth = (currentTargets.length > 0 && currentTargets[0] != null && currentTargets[0].depthBuffer != null);
 		
-		// Create blend hash (fits in 16 bits: 4 bits per parameter)
-		var blendHash = blendSrc | (blendDst << 4) | (blendAlphaSrc << 8) | (blendAlphaDst << 12);
-
-		// Create cache key combining stride, target format, depth state, and blend mode
-		var cacheKey = bufferStride | (targetFormat << 16) | ((hasDepth ? 1 : 0) << 24) | (blendHash << 25);
+		// MRT count (1-8 render targets)
+		var mrtCount = currentTargets.length > 0 ? currentTargets.length : 1;
 		
-		// Check if we have a cached pipeline for this stride+format combination
-		var pipeline = compiledShader.pipelineCache.get(cacheKey);
+		// Create cache key as string to avoid integer overflow/collision issues
+		// Format: "stride_format_depth_mrt_blendSrc_blendDst_blendAlphaSrc_blendAlphaDst"
+		var cacheKeyStr = bufferStride + "_" + targetFormat + "_" + (hasDepth ? 1 : 0) + "_" + mrtCount + "_" + 
+		                  blendSrc + "_" + blendDst + "_" + blendAlphaSrc + "_" + blendAlphaDst;
+		
+		// Check if we have a cached pipeline for this configuration
+		var pipeline = compiledShader.pipelineCacheStr.get(cacheKeyStr);
 		if (pipeline != null) return pipeline;
 		
 		// Create new pipeline with correct stride and blend mode
@@ -748,7 +776,7 @@ class MetalDriver extends Driver {
 		);
 		
 		if (pipeline != null) {
-			compiledShader.pipelineCache.set(cacheKey, pipeline);
+			compiledShader.pipelineCacheStr.set(cacheKeyStr, pipeline);
 		}
 		
 		return pipeline;
@@ -1105,12 +1133,53 @@ class MetalDriver extends Driver {
 	}
 
 	override function setRenderTargets(textures:Array<h3d.mat.Texture>, depthBinding:h3d.Engine.DepthBinding = ReadWrite) {
-		// For now, route through single render target
-		// Full MRT support would require changes to begin_texture_render_pass
-		if (textures.length > 0) {
-			setRenderTarget(textures[0], 0, 0, depthBinding);
-		} else {
+		if (textures.length == 0) {
 			setRenderTarget(null, 0, 0, depthBinding);
+			return;
+		}
+		
+		if (textures.length == 1) {
+			// Single target - use regular setRenderTarget
+			setRenderTarget(textures[0], 0, 0, depthBinding);
+			return;
+		}
+		
+		// Multiple Render Targets (MRT)
+		// End current render pass if any
+		if (currentRenderEncoder != null) {
+			MetalNative.end_encoding(currentRenderEncoder);
+			currentRenderEncoder = null;
+		}
+		
+		// Store the targets for tracking
+		currentTargets = textures.copy();
+		
+		// Create array of Metal textures
+		var metalTextures = new hl.NativeArray<Dynamic>(textures.length);
+		for (i in 0...textures.length) {
+			var tex = textures[i];
+			if (tex != null && tex.t != null) {
+				metalTextures[i] = tex.t.t;
+			}
+		}
+		
+		// Get clear color (use default for MRT)
+		var clearR = 0;
+		var clearG = 0;
+		var clearB = 0;
+		var clearA = 255;  // Positive alpha = clear, negative = load
+		
+		// Begin MRT render pass - need command buffer
+		if (currentCommandBuffer == null) {
+			currentCommandBuffer = MetalNative.create_command_buffer();
+		}
+		currentRenderEncoder = MetalNative.begin_mrt_render_pass(currentCommandBuffer, metalTextures, clearR, clearG, clearB, clearA);
+		
+		if (currentRenderEncoder != null && textures[0] != null) {
+			// Set viewport based on first target
+			var firstTex = textures[0];
+			MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast firstTex.width, cast firstTex.height);
+			MetalNative.set_scissor_rect(currentRenderEncoder, 0, 0, firstTex.width, firstTex.height);
 		}
 	}
 
