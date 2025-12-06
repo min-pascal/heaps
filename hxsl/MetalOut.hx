@@ -231,12 +231,8 @@ class MetalOut {
 	}
 
 	function getSamplerType(dim:TexDimension, arr:Bool, ?varName:String) {
-		// For shadow shaders, use depth2d<float> for 2D textures
-		// This enables hardware depth comparison with sample_compare()
-		if (isShadowShader && dim == T2D) {
-			return "depth2d<float>";
-		}
-		
+		// Regular samplers always use texture2d<float> etc.
+		// Depth samplers (TSamplerDepth) use getDepthSamplerType() instead
 		return switch(dim) {
 		case T1D: "texture1d<float>";
 		case T2D: "texture2d<float>";
@@ -651,6 +647,15 @@ class MetalOut {
 			// Handle special operators in Metal
 			var handled = false;
 			switch(op) {
+			// Handle unsigned right shift: Metal doesn't have >>> operator
+			case OpUShr:
+				decl("int _ushr(int i, int j) { return int(uint(i) >> uint(j)); }");
+				add("_ushr(");
+				writeExpr(e1);
+				add(", ");
+				writeExpr(e2);
+				add(")");
+				handled = true;
 			// Handle float modulo: Metal uses fmod() function instead of % operator
 			case OpMod if (e.t != TInt):
 				add("fmod(");
@@ -745,6 +750,23 @@ class MetalOut {
 						add(").c.w))");
 						handled = true;
 					}
+				}
+			// Handle vector comparison operators - Metal returns bool vectors, need to cast to float
+			case OpGt | OpLt | OpGte | OpLte | OpEq | OpNotEq:
+				var vecSize = switch(e.t) {
+					case TVec(n, VFloat): n;
+					default: 0;
+				};
+				if (vecSize > 0) {
+					// Vector comparison assigned to float vector - need explicit cast
+					add("float" + vecSize + "(");
+					writeExpr(e1);
+					add(" ");
+					add(Printer.opStr(op));
+					add(" ");
+					writeExpr(e2);
+					add(")");
+					handled = true;
 				}
 			default:
 			}
@@ -871,13 +893,20 @@ class MetalOut {
 		case TMeta(_, _, e):
 			// Metadata expressions - just output the inner expression like GLSL does
 			writeExpr(e);
+		case TIf(econd, eif, eelse):
+			// Ternary expression: (cond) ? eif : eelse
+			add("((");
+			writeExpr(econd);
+			add(") ? ");
+			writeExpr(eif);
+			add(" : ");
+			writeExpr(eelse);
+			add(")");
 		default:
 			add("/* unsupported expr: " + e.e.getName() + " */");
 		}
 	}
 
-	var isShadowShader : Bool = false;  // NEW: Track if this shader uses shadows
-	
 	public function run( s : ShaderData ) {
 		locals = new Map();
 		decls = [];
@@ -888,16 +917,6 @@ class MetalOut {
 		isVertex = false;
 		isFragment = false;
 		isCompute = false;
-		
-		// Detect if this is a shadow shader by checking for shadow-related variables
-		isShadowShader = false;
-		for (v in s.vars) {
-			var lowerName = v.name.toLowerCase();
-			if (lowerName.indexOf("shadow") >= 0) {
-				isShadowShader = true;
-				break;
-			}
-		}
 
 		if( s.funs.length != 1 ) throw "assert";
 		var f = s.funs[0];
