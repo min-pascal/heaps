@@ -118,6 +118,7 @@ class MetalOut {
 	var isVertex : Bool;
 	var isCompute : Bool;
 	var isFragment : Bool;
+	var usesInstanceId : Bool;
 	var allNames : Map<String,Int>;
 	
 	// MRT (Multiple Render Targets) support
@@ -137,6 +138,57 @@ class MetalOut {
 
 	inline function ident( v : TVar ) {
 		add(varName(v));
+	}
+
+	// Scan shader expression tree for InstanceID usage
+	function scanForInstanceId(e:TExpr):Bool {
+		if( e == null ) return false;
+		switch( e.e ) {
+		case TGlobal(g):
+			if( g == InstanceID ) return true;
+		case TArray(e1, e2):
+			if( scanForInstanceId(e1) ) return true;
+			if( scanForInstanceId(e2) ) return true;
+		case TBinop(_, e1, e2):
+			if( scanForInstanceId(e1) ) return true;
+			if( scanForInstanceId(e2) ) return true;
+		case TUnop(_, e1):
+			if( scanForInstanceId(e1) ) return true;
+		case TVar(_):
+			// Variable reference
+		case TConst(_):
+			// Constant
+		case TIf(econd, eif, eelse):
+			if( scanForInstanceId(econd) ) return true;
+			if( scanForInstanceId(eif) ) return true;
+			if( eelse != null && scanForInstanceId(eelse) ) return true;
+		case TCall(ef, args):
+			if( scanForInstanceId(ef) ) return true;
+			for( a in args )
+				if( scanForInstanceId(a) ) return true;
+		case TBlock(el):
+			for( ex in el )
+				if( scanForInstanceId(ex) ) return true;
+		case TSwiz(e1, _):
+			if( scanForInstanceId(e1) ) return true;
+		case TParenthesis(e1):
+			if( scanForInstanceId(e1) ) return true;
+		case TMeta(_, _, e1):
+			if( scanForInstanceId(e1) ) return true;
+		case TFor(_, it, loop):
+			if( scanForInstanceId(it) ) return true;
+			if( scanForInstanceId(loop) ) return true;
+		case TWhile(cond, loop, _):
+			if( scanForInstanceId(cond) ) return true;
+			if( scanForInstanceId(loop) ) return true;
+		case TReturn(e1):
+			if( e1 != null && scanForInstanceId(e1) ) return true;
+		case TDiscard:
+			// No sub-expressions
+		default:
+			// Other cases
+		}
+		return false;
 	}
 
 	function varName( v : TVar ) {
@@ -588,6 +640,24 @@ class MetalOut {
 					add(", ");
 					writeExpr(args[2]);
 					add(" }");
+				} else if( args.length == 1 ) {
+					// Constructor from a single float4x4 - extract first 3 rows
+					switch( args[0].t ) {
+					case TMat4:
+						// float4x4 to _mat3x4: extract first 3 rows
+						add("(_mat3x4){ ");
+						writeExpr(args[0]);
+						add("[0], ");
+						writeExpr(args[0]);
+						add("[1], ");
+						writeExpr(args[0]);
+						add("[2] }");
+					default:
+						// Fallback for other single-argument cases
+						add("(_mat3x4){ ");
+						writeExpr(args[0]);
+						add(" }");
+					}
 				} else {
 					// Fallback to struct literal syntax
 					add("(_mat3x4){ ");
@@ -925,6 +995,7 @@ class MetalOut {
 		isVertex = false;
 		isFragment = false;
 		isCompute = false;
+		usesInstanceId = false;
 
 		if( s.funs.length != 1 ) throw "assert";
 		var f = s.funs[0];
@@ -981,6 +1052,9 @@ class MetalOut {
 			}
 			add("};\n\n");
 
+			// Check if shader uses instance_id
+			usesInstanceId = scanForInstanceId(f.expr);
+
 			// Vertex main function
 			add("vertex VertexOut vertex_main(VertexIn input [[stage_in]]");
 			
@@ -992,6 +1066,13 @@ class MetalOut {
 					add(", constant ");
 					var old = v.type;
 					switch( v.type ) {
+					case TBuffer(t, _, _):
+						v.type = t;
+						addType(v.type);
+						v.type = old;
+						add(" *");
+						add(varName(v));
+						add(" [[buffer(" + bufferIndex + ")]]");
 					case TArray(t, _):
 						v.type = t;
 						addType(v.type);
@@ -1007,6 +1088,11 @@ class MetalOut {
 					}
 					bufferIndex++;
 				}
+			}
+			
+			// Add instance_id parameter if the shader uses instancing
+			if( usesInstanceId ) {
+				add(", uint instance_id [[instance_id]]");
 			}
 			
 			add(") {\n");
