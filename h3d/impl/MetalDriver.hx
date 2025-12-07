@@ -32,6 +32,7 @@ private class MetalShaderContext {
 	public var params : Dynamic; // id<MTLBuffer> (deprecated, use paramsBuffers instead)
 	public var paramsBuffers : Array<Dynamic>; // Array of id<MTLBuffer> for triple buffering
 	public var texturesTypes : Array<hxsl.Ast.Type>;
+	public var bufferTypes : Array<hxsl.Ast.BufferKind>; // Types of each buffer (Uniform, Storage, RW)
 	#if debug
 	public var debugSource : String;
 	#end
@@ -39,6 +40,7 @@ private class MetalShaderContext {
 	public function new(shader) {
 		this.shader = shader;
 		this.paramsBuffers = [];
+		this.bufferTypes = [];
 	}
 }
 
@@ -113,6 +115,7 @@ private class MetalNative {
 	public static function set_fragment_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
 	public static function draw_primitives(encoder:Dynamic, primitiveType:Int, vertexStart:Int, vertexCount:Int):Void {}
 	public static function draw_indexed_primitives(encoder:Dynamic, primitiveType:Int, indexCount:Int, indexBuffer:Dynamic, indexOffset:Int):Void {}
+	public static function draw_indexed_primitives_instanced(encoder:Dynamic, primitiveType:Int, indexCount:Int, indexBuffer:Dynamic, indexOffset:Int, instanceCount:Int):Void {}
 	public static function end_encoding(encoder:Dynamic):Void {}
 
 	// Viewport and render state
@@ -565,17 +568,28 @@ class MetalDriver extends Driver {
 		var compiled = new CompiledMetalShader();
 		compiled.id = shader.id;
 
-		// Compile vertex shader using hxsl.MetalOut
-		if (shader.vertex != null && shader.vertex.data != null) {
-			var vertexSource = shaderCompiler.run(shader.vertex.data);
-			
-			#if debug
-			// Save shader source for debugging (only in debug builds)
-			try {
-				var path = "/tmp/metal_vertex_shader_" + shader.id + ".metal";
-				sys.io.File.saveContent(path, vertexSource);
-			} catch(e:Dynamic) {}
-			
+    // Compile vertex shader using hxsl.MetalOut
+    if (shader.vertex != null && shader.vertex.data != null) {
+      var vertexSource:String = null;
+      try {
+        vertexSource = shaderCompiler.run(shader.vertex.data);
+      } catch(e:Dynamic) {
+        // Save error message to file
+        try {
+          var path = "/tmp/metal_vertex_shader_error_" + shader.id + ".txt";
+          sys.io.File.saveContent(path, "Error compiling vertex shader: " + Std.string(e));
+        } catch(e2:Dynamic) {}
+        throw "Vertex shader generation failed for shader id=" + shader.id + ": " + Std.string(e);
+      }
+
+      // Save shader source for debugging
+      try {
+        var path = "/tmp/metal_vertex_shader_" + shader.id + ".metal";
+        sys.io.File.saveContent(path, vertexSource);
+      } catch(e:Dynamic) {
+
+      }
+      #if debug
 			compiled.vertex = new MetalShaderContext(null);
 			compiled.vertex.debugSource = vertexSource;
 			#end
@@ -589,7 +603,10 @@ class MetalDriver extends Driver {
 			compiled.vertex.globalsSize = shader.vertex.globalsSize;
 			compiled.vertex.paramsSize = shader.vertex.paramsSize;
 			compiled.vertex.texturesCount = shader.vertex.texturesCount;
-			if (compiled.vertex.globalsSize > 0) compiled.vertex.globals = MetalNative.create_buffer(compiled.vertex.globalsSize << 4, 2);
+			if (compiled.vertex.globalsSize > 0) {
+        compiled.vertex.globals = MetalNative.create_buffer(compiled.vertex.globalsSize << 4, 2);
+      }
+
 			if (compiled.vertex.paramsSize > 0) {
 				// paramsSize is in vec4 units, each vec4 = 16 bytes, so multiply by 16 (shift left 4)
 				var singleDrawSize = compiled.vertex.paramsSize << 4;
@@ -603,6 +620,20 @@ class MetalDriver extends Driver {
 				// Keep legacy single buffer for compatibility (uses first buffer)
 				compiled.vertex.params = compiled.vertex.paramsBuffers[0];
 				compiled.vertex.paramsContent = new hl.Bytes(singleDrawSize);
+			}
+
+			// Set up buffer types for vertex shader
+			compiled.vertex.bufferCount = shader.vertex.bufferCount;
+			if (shader.vertex.bufferCount > 0) {
+				var bp = shader.vertex.buffers;
+				while (bp != null) {
+					var kind = switch (bp.type) {
+						case TBuffer(_, _, k): k;
+						default: hxsl.Ast.BufferKind.Uniform;
+					};
+					compiled.vertex.bufferTypes.push(kind);
+					bp = bp.next;
+				}
 			}
 		}
 
@@ -645,6 +676,19 @@ class MetalDriver extends Driver {
 				// Keep legacy single buffer for compatibility (uses first buffer)
 				compiled.fragment.params = compiled.fragment.paramsBuffers[0];
 				compiled.fragment.paramsContent = new hl.Bytes(singleDrawSize);
+			}
+			// Set up buffer types for fragment shader
+			compiled.fragment.bufferCount = shader.fragment.bufferCount;
+			if (shader.fragment.bufferCount > 0) {
+				var bp = shader.fragment.buffers;
+				while (bp != null) {
+					var kind = switch (bp.type) {
+						case TBuffer(_, _, k): k;
+						default: hxsl.Ast.BufferKind.Uniform;
+					};
+					compiled.fragment.bufferTypes.push(kind);
+					bp = bp.next;
+				}
 			}
 		}
 
@@ -948,6 +992,87 @@ class MetalDriver extends Driver {
 		}
 		
 		// Increment draw call counter after each draw
+		drawCallIndex++;
+	}
+
+	override function drawInstanced(ibuf:h3d.Buffer, commands:h3d.impl.InstanceBuffer) {
+		if (currentRenderEncoder == null || currentShader == null || currentBuffer == null || currentRuntimeShader == null) {
+			return;
+		}
+		
+		if (commands == null || commands.commandCount <= 0) {
+			return;
+		}
+
+		// Get or create pipeline with current blend mode and buffer format
+		var pipeline = getOrCreatePipeline(currentShader, currentRuntimeShader, currentBuffer.format.strideBytes,
+			currentBlendSrc, currentBlendDst, currentBlendAlphaSrc, currentBlendAlphaDst);
+		if (pipeline == null) {
+			return;
+		}
+
+		// Set the pipeline state
+		MetalNative.set_render_pipeline_state(currentRenderEncoder, pipeline);
+
+		// Bind dummy white texture if no actual textures were bound
+		if (!texturesBound && dummyWhiteTexture != null) {
+			MetalNative.set_fragment_texture(currentRenderEncoder, dummyWhiteTexture, 0);
+		}
+
+		// Bind uniform buffers (same as regular draw)
+		var vertexBufferIndex = 1;
+		if (currentShader.vertex != null) {
+			if (currentShader.vertex.globals != null) {
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, 0, vertexBufferIndex);
+				vertexBufferIndex++;
+			}
+			if (currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsBuffers.length > 0) {
+				var currentParamsBuffer = currentShader.vertex.paramsBuffers[currentFrameIndex];
+				var bytes = currentShader.vertex.paramsSize << 4;
+				var offset = drawCallIndex * bytes;
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentParamsBuffer, offset, vertexBufferIndex);
+				vertexBufferIndex++;
+			}
+		}
+
+		if (currentShader.fragment != null) {
+			var fragmentBufferIndex = 0;
+			if (currentShader.fragment.globals != null) {
+				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.globals, 0, fragmentBufferIndex);
+				fragmentBufferIndex++;
+			}
+			if (currentShader.fragment.paramsBuffers != null && currentShader.fragment.paramsBuffers.length > 0) {
+				var currentParamsBuffer = currentShader.fragment.paramsBuffers[currentFrameIndex];
+				var bytes = currentShader.fragment.paramsSize << 4;
+				var offset = drawCallIndex * bytes;
+				MetalNative.set_fragment_buffer(currentRenderEncoder, currentParamsBuffer, offset, fragmentBufferIndex);
+				fragmentBufferIndex++;
+			}
+		}
+
+		// Bind current vertex buffer to index 0
+		if (currentBuffer != null && currentBuffer.vbuf != null) {
+			MetalNative.set_vertex_buffer(currentRenderEncoder, currentBuffer.vbuf, 0, 0);
+		}
+
+		// Perform instanced draw
+		if (ibuf != null) {
+			if (ibuf.vbuf == null) {
+				ibuf.vbuf = allocBuffer(ibuf);
+			}
+
+			var indexCount = commands.indexCount;
+			var indexOffset = commands.startIndex * 2; // 16-bit indices
+			var instanceCount = commands.commandCount;
+
+			MetalNative.draw_indexed_primitives_instanced(currentRenderEncoder, 3, indexCount, ibuf.vbuf, indexOffset, instanceCount);
+		}
+		
+		// Mark backbuffer rendering if applicable
+		if (currentTargets.length == 0) {
+			renderedToBackbuffer = true;
+		}
+		
 		drawCallIndex++;
 	}
 
@@ -1345,8 +1470,40 @@ class MetalDriver extends Driver {
 				}
 
 			case Buffers:
-				// Handle buffer bindings if needed
-				// This is for compute shaders and other advanced features
+				// Handle buffer bindings for MeshBatch and other instanced rendering
+				// These are storage/uniform buffers like Batch_Buffer containing per-instance data
+				if (currentRenderEncoder == null) {
+					return;
+				}
+				
+				// Bind vertex shader buffers
+				if (currentShader.vertex != null && currentShader.vertex.bufferCount > 0 && buffers.vertex.buffers != null) {
+					// Buffer indices: 0=vertex data, 1=globals, 2=params, 3+=extra buffers
+					var startIndex = 1; // Start after vertex data at 0
+					if (currentShader.vertex.globals != null) startIndex++;
+					if (currentShader.vertex.paramsSize > 0) startIndex++;
+					
+					for (i in 0...currentShader.vertex.bufferCount) {
+						var buf = buffers.vertex.buffers[i];
+						if (buf != null && buf.vbuf != null) {
+							MetalNative.set_vertex_buffer(currentRenderEncoder, buf.vbuf, 0, startIndex + i);
+						}
+					}
+				}
+				
+				// Bind fragment shader buffers
+				if (currentShader.fragment != null && currentShader.fragment.bufferCount > 0 && buffers.fragment.buffers != null) {
+					var startIndex = 0;
+					if (currentShader.fragment.globals != null) startIndex++;
+					if (currentShader.fragment.paramsSize > 0) startIndex++;
+					
+					for (i in 0...currentShader.fragment.bufferCount) {
+						var buf = buffers.fragment.buffers[i];
+						if (buf != null && buf.vbuf != null) {
+							MetalNative.set_fragment_buffer(currentRenderEncoder, buf.vbuf, 0, startIndex + i);
+						}
+					}
+				}
 		}
 	}
 
@@ -1470,9 +1627,9 @@ class MetalDriver extends Driver {
 
 // Stub implementation when Metal is not available
 class MetalDriver extends Driver {
-	public function new() {
-		throw "Metal is not available";
-	}
+  public function new() {
+    throw "Metal is not available";
+  }
 }
 
 #end
