@@ -1,5 +1,6 @@
 package h3d.impl;
 
+#if hl
 /**
  * Apple Metal Samples Integration
  * Contains all the sample-specific rendering methods migrated from Apple's Metal C++ samples
@@ -273,3 +274,4 @@ private class MetalNative {
   public static function trigger_frame_capture():Bool { return false; }
   public static function check_auto_capture():Bool { return false; }
 }
+#end
