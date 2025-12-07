@@ -832,24 +832,32 @@ class MetalOut {
 				add("]");
 			}
 		case TSwiz(e, regs):
-			// Check if we're swizzling a scalar (broadcast to vector)
-			var isScalarBroadcast = switch(e.t) {
-				case TFloat: regs.length > 1;
+			// Check if we're swizzling a scalar type
+			// This handles nested swizzles like depth.x.x where the inner .x returns TFloat
+			var isScalar = switch(e.t) {
+				case TFloat: true;
+				case TVec(1, VFloat): true;  // Single-component vector is effectively scalar
 				default: false;
 			}
 
-			if( isScalarBroadcast ) {
-				// Metal doesn't support swizzling scalars - use constructor instead
-				// e.g. depth.xxxx becomes float4(depth)
-				var componentType = switch(regs.length) {
-					case 2: "float2";
-					case 3: "float3";
-					case 4: "float4";
-					default: "float";
+			if( isScalar ) {
+				if( regs.length > 1 ) {
+					// Scalar broadcast to vector - Metal doesn't support swizzling scalars
+					// e.g. depth.xxxx becomes float4(depth)
+					var componentType = switch(regs.length) {
+						case 2: "float2";
+						case 3: "float3";
+						case 4: "float4";
+						default: "float";
+					}
+					add(componentType + "(");
+					writeExpr(e);
+					add(")");
+				} else {
+					// Single component swizzle on scalar (e.g. depth.x) - just output the scalar
+					// Metal doesn't allow .x on a float
+					writeExpr(e);
 				}
-				add(componentType + "(");
-				writeExpr(e);
-				add(")");
 			} else {
 				writeExpr(e);
 				if( regs.length > 0 ) {
