@@ -175,7 +175,7 @@ class HlslOut {
 			add("float4x4");
 		case TMat3x4:
 			add("float4x3");
-		case TSampler(_), TRWTexture(_):
+		case TSampler(_), TSamplerDepth(_), TRWTexture(_):
 			add(getTexType(t));
 		case TStruct(vl):
 			add("struct { ");
@@ -298,6 +298,7 @@ class HlslOut {
 	function getTexType( t : Type ) {
 		return switch( t ) {
 		case TSampler(dim, arr): "Texture"+dim.getName().substr(1)+(arr?"Array":"");
+		case TSamplerDepth(dim, arr): "Texture"+dim.getName().substr(1)+(arr?"Array":"");
 		case TRWTexture(dim, arr, chans): "RWTexture"+dim.getName().substr(1)+(arr?"Array":"")+"<"+(chans==1?"float":"float"+chans)+">";
 		default: throw "assert";
 		}
@@ -380,7 +381,7 @@ class HlslOut {
 			var tt = args[0].t;
 			var tstr = getTexType(tt);
 			switch( tt ) {
-			case TSampler(dim, arr) if( args.length > 1 ):
+			case TSampler(dim, arr), TSamplerDepth(dim, arr) if( args.length > 1 ):
 				var size = Tools.getDimSize(dim, arr);
 				switch( size ) {
 				case 1:
@@ -390,7 +391,7 @@ class HlslOut {
 				case 3:
 					decl('float3 textureSize($tstr tex, int lod) { float w; float h; float els; float levels; tex.GetDimensions((uint)lod,w,h,els,levels); return float3(w, h, els); }');
 				}
-			case TSampler(dim,arr), TRWTexture(dim, arr, _):
+			case TSampler(dim,arr), TSamplerDepth(dim,arr), TRWTexture(dim, arr, _):
 				var size = Tools.getDimSize(dim, arr);
 				switch( size ) {
 				case 1:
