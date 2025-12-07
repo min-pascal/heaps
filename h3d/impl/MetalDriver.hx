@@ -118,6 +118,9 @@ private class MetalNative {
 	// Viewport and render state
 	public static function set_viewport(encoder:Dynamic, x:Float, y:Float, width:Float, height:Float):Void {}
 	public static function set_scissor_rect(encoder:Dynamic, x:Int, y:Int, width:Int, height:Int):Void {}
+	
+	// Debug/logging control (0=errors, 1=warnings, 2=info, 3=verbose)
+	public static function set_debug_level(level:Int):Void {}
 }
 
 class MetalDriver extends Driver {
