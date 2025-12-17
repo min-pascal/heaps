@@ -720,7 +720,7 @@ class GlDriver extends Driver {
 
 					var mode = getBindType(t);
 					if( mode != pt.mode )
-						throw "Texture format mismatch: "+t+" should be "+pt.t;
+						throw "Texture format mismatch: "+t+ " is " + getBindName(mode) + " but should be "+getBindName(pt.mode) + " ( " +pt.t+" )";
 					gl.activeTexture(GL.TEXTURE0 + idx);
 					gl.uniform1i(pt.u, idx);
 					gl.bindTexture(mode, t.t.t);
@@ -730,7 +730,8 @@ class GlDriver extends Driver {
 				var mip = Type.enumIndex(t.mipMap);
 				var filter = Type.enumIndex(t.filter);
 				var wrap = Type.enumIndex(t.wrap);
-				var bits = mip | (filter << 3) | (wrap << 6);
+				var startingMip = t.startingMip;
+				var bits = t.bits;
 				if( bits != t.t.bits ) {
 					t.t.bits = bits;
 					var flags = TFILTERS[mip][filter];
@@ -742,17 +743,11 @@ class GlDriver extends Driver {
 					gl.texParameteri(mode, GL.TEXTURE_WRAP_S, w);
 					gl.texParameteri(mode, GL.TEXTURE_WRAP_T, w);
 					gl.texParameteri(mode, GL.TEXTURE_WRAP_R, w);
+					gl.texParameteri(mode, GL.TEXTURE_BASE_LEVEL, startingMip);
+					#if !js
+					gl.texParameterf(mode, GL.TEXTURE_LOD_BIAS, t.lodBias);
+					#end
 				}
-				if( t.t.startMip != t.startingMip ) {
-					gl.texParameteri(pt.mode, GL.TEXTURE_BASE_LEVEL, t.startingMip);
-					t.t.startMip = t.startingMip;
-				}
-				#if !js
-				if( t.lodBias != t.t.bias ) {
-					t.t.bias = t.lodBias;
-					gl.texParameterf(pt.mode, GL.TEXTURE_LOD_BIAS, t.lodBias);
-				}
-				#end
 			}
 		}
 	}
@@ -1038,6 +1033,19 @@ class GlDriver extends Driver {
 		}
 	}
 
+	function getBindName( i : Int ) {
+		return switch( i ) {
+		case GL.TEXTURE_2D: "TEXTURE_2D";
+		case GL.TEXTURE_3D: "TEXTURE_3D";
+		case GL.TEXTURE_CUBE_MAP: "TEXTURE_CUBE_MAP";
+		case GL.TEXTURE_2D_ARRAY: "TEXTURE_2D_ARRAY";
+		#if (hlsdl > version("1.15.0"))
+		case GL.TEXTURE_CUBE_MAP_ARRAY: "TEXTURE_CUBE_MAP_ARRAY";
+		#end
+		default: "UNKNOWN_TEXTURE_TYPE";
+		};
+	}
+
 	function getBindType( t : h3d.mat.Texture ) {
 		if ( t.flags.has(Is3D) )
 			return GL.TEXTURE_3D;
@@ -1051,7 +1059,7 @@ class GlDriver extends Driver {
 		discardError();
 		var tt = gl.createTexture();
 		var bind = getBindType(t);
-		var tt : Texture = { t : tt, width : t.width, height : t.height, internalFmt : GL.RGBA, pixelFmt : GL.UNSIGNED_BYTE, bits : -1, bind : bind, bias : 0, startMip : t.startingMip #if multidriver, driver : this #end };
+		var tt : Texture = { t : tt, width : t.width, height : t.height, internalFmt : GL.RGBA, pixelFmt : GL.UNSIGNED_BYTE, bits : -1, bind : bind #if multidriver, driver : this #end };
 		switch( t.format ) {
 		case RGBA:
 			// default
@@ -1208,7 +1216,7 @@ class GlDriver extends Driver {
 
 	override function allocDepthBuffer( t : h3d.mat.Texture ) : Texture {
 		var tt = gl.createTexture();
-		var tt : Texture = { t : tt, width : t.width, height : t.height, internalFmt : GL.RGBA, pixelFmt : GL.UNSIGNED_BYTE, bits : -1, bind : GL.TEXTURE_2D, bias : 0, startMip: 0 #if multidriver, driver : this #end };
+		var tt : Texture = { t : tt, width : t.width, height : t.height, internalFmt : GL.RGBA, pixelFmt : GL.UNSIGNED_BYTE, bits : -1, bind : GL.TEXTURE_2D #if multidriver, driver : this #end };
 		var fmt = GL.DEPTH_COMPONENT;
 		switch( t.format ) {
 		case Depth16:

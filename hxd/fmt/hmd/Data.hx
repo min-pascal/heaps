@@ -118,7 +118,7 @@ enum ResolveResult {
 class Collider {
 	public var type : ColliderType;
 
-	public static function resolveColliderType(d : Data, model : Model, params : CollideParams) : ResolveResult {
+	public static function resolveColliderType(d : Data, model : Model, params : CollideParams, ?collisionThresholdHeight : Float, ?collisionUseLowLod : Bool) : ResolveResult {
 		var generateCollides : Dynamic = null; // Default config (props.json)
 
 		var type : ResolveResult = null;
@@ -128,8 +128,20 @@ class Collider {
 		if (type == null && params.useDefault) {
 			collidersParams = generateCollides;
 			var colliderModel = findMeshModel(d, model.getObjectName() + "_Collider");
-			if (colliderModel != null)
+			if (colliderModel != null) {
 				type = ResolveResult.Mesh(colliderModel);
+			}
+
+			if (type == null && collisionThresholdHeight != null) {
+				var dimension = d.geometries[model.geometry].bounds.dimension();
+				if (dimension < collisionThresholdHeight)
+					type = ResolveResult.Empty;
+			}
+
+			if (type == null && collisionUseLowLod != null) {
+				if (model.lods != null && model.lods.length > 0)
+					type = ResolveResult.Mesh(d.models[model.lods[model.lods.length - 1]]);
+			}
 		}
 		if (type == null && collidersParams != null) {
 			var colliderModel = findMeshModel(d, collidersParams.mesh) ?? model;
@@ -201,7 +213,7 @@ class ConvexHullsCollider extends Collider {
 		var ret = try Sys.command("meshTools",["vhacd", fileName, outFile, '${params.maxConvexHulls}', '${params.maxResolution}']) catch( e : Dynamic ) -1;
 		if( ret != 0 ) {
 			sys.FileSystem.deleteFile(fileName);
-			throw "Failed to call 'vhacd' executable required to generate collision data. Please ensure it's in your PATH";
+			throw "Failed to call 'meshTools' executable required to generate collision data. Please ensure it's in your PATH (see tools/meshTools for build)";
 		}
 
 		// Get result data and format it for output

@@ -6,7 +6,7 @@ typedef Texture = {};
 typedef Query = {};
 #elseif js
 typedef GPUBuffer = js.html.webgl.Buffer;
-typedef Texture = { t : js.html.webgl.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bias : Float, bind : Int #if multidriver, driver : Driver #end, startMip : Int };
+typedef Texture = { t : js.html.webgl.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int #if multidriver, driver : Driver #end };
 typedef Query = {};
 #elseif metal
 typedef GPUBuffer = Dynamic;
@@ -14,19 +14,19 @@ typedef Texture = { t : Dynamic, width : Int, height : Int, internalFmt : Int, p
 typedef Query = {};
 #elseif hlsdl
 typedef GPUBuffer = sdl.GL.Buffer;
-typedef Texture = { t : sdl.GL.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int, bias : Float, startMip : Int #if multidriver, driver : Driver #end };
+typedef Texture = { t : sdl.GL.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int #if multidriver, driver : Driver #end };
 typedef Query = { q : sdl.GL.Query, kind : QueryKind };
 #elseif usegl
 typedef GPUBuffer = haxe.GLTypes.Buffer;
-typedef Texture = { t : haxe.GLTypes.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int, bias : Float, startMip : Int };
+typedef Texture = { t : haxe.GLTypes.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int };
 typedef Query = { q : haxe.GLTypes.Query, kind : QueryKind };
 #elseif (hldx && dx12)
-typedef GPUBuffer = DX12Driver.VertexBufferData;
+typedef GPUBuffer = DX12Driver.BufferData;
 typedef Texture = h3d.impl.DX12Driver.TextureData;
 typedef Query = h3d.impl.DX12Driver.QueryData;
 #elseif hldx
 typedef GPUBuffer = dx.Resource;
-typedef Texture = { res : dx.Resource, view : dx.Driver.ShaderResourceView, ?depthView : dx.Driver.DepthStencilView, ?readOnlyDepthView : dx.Driver.DepthStencilView, rt : Array<dx.Driver.RenderTargetView>, mips : Int, ?views : Array<dx.Driver.ShaderResourceView> };
+typedef Texture = { res : dx.Resource, view : dx.Driver.ShaderResourceView, ?depthView : dx.Driver.DepthStencilView, ?readOnlyDepthView : dx.Driver.DepthStencilView, rt : Array<dx.Driver.RenderTargetView>, ?views : Array<dx.Driver.ShaderResourceView> };
 typedef Query = {};
 #elseif usesys
 typedef GPUBuffer = haxe.GraphicsDriver.GPUBuffer;

@@ -49,6 +49,8 @@ class Checker {
 		var genFloat = [for( t in genType ) { args : [ { name : "value", type : t } ], ret : t } ];
 		var genFloat2 = [for( t in genType ) { args : [ { name : "a", type : t }, { name : "b", type : t } ], ret : t } ];
 		var genWithFloat = [for( t in genType ) { args : [ { name : "a", type : t }, { name : "b", type : TFloat } ], ret : t } ];
+		var genInt2 = [for( t in genIType ) { args : [ { name : "a", type : t }, { name : "b", type : t } ], ret : t } ];
+		var genWithInt = [for( t in genIType ) { args : [ { name : "a", type : t }, { name : "b", type : TInt } ], ret : t } ];
 		var genSqMat = [for( t in genSqMatType ) { args : [ { name : "value", type : t } ], ret : t } ];
 		var texDefs = [
 			{ dim : T1D, arr : false, uv : TFloat, iuv : TInt },
@@ -68,8 +70,10 @@ class Checker {
 			case Pow: genFloat2;
 			case LReflect:
 				genFloat2;
-			case Mod, Min, Max:
+			case Mod:
 				genFloat2.concat(genWithFloat);
+			case Min, Max:
+				genFloat2.concat(genWithFloat).concat(genInt2).concat(genWithInt);
 			case Length:
 				[for( t in genType ) { args : [ { name : "value", type : t } ], ret : TFloat } ];
 			case Distance, Dot:
@@ -88,6 +92,8 @@ class Checker {
 				.concat([for( t in texDefs ) { args : [{ name : "tex", type : TSamplerDepth(t.dim,t.arr) }, { name : "uv", type : t.uv }, { name : "lod", type : TFloat }], ret : TFloat }]);  // Depth returns float
 			case Texel:
 				[for( t in texDefs ) { args : [{ name : "tex", type : TSampler(t.dim,t.arr) }, { name : "pos", type : t.iuv }], ret : vec4 }];
+			case TexelLod:
+				[for( t in texDefs ) { args : [{ name : "tex", type : TSampler(t.dim,t.arr) }, { name : "pos", type : t.iuv }, { name : "lod", type : TInt }], ret : vec4 }];
 			case TextureSize:
 				[];
 			case ToInt:
@@ -762,10 +768,8 @@ class Checker {
 				type = vec3;
 			case TMat4, TMat3x4:
 				type = vec4;
-			case TVec(_, VFloat):
-				type = TFloat;
-			case TVec(_, VInt):
-				type = TInt;
+			case TVec(_, t):
+				type = t.toType();
 			default:
 				error("Cannot index " + e1.t.toString() + " : should be an array", e.pos);
 			}
@@ -1083,7 +1087,8 @@ class Checker {
 			case ["getLod", TSampler(_)]: TextureLod;
 			case ["getLod", TSamplerDepth(_)]: TextureLod;  // Depth samplers support getLod
 			case ["getLod", TChannel(_)]: ChannelReadLod;
-			case ["fetch"|"fetchLod", TSampler(_)]: Texel;
+			case ["fetch", TSampler(_)]: Texel;
+			case ["fetchLod", TSampler(_)]: TexelLod;
 			case ["fetch"|"fetchLod", TChannel(_)]: ChannelFetch;
 			case ["size", TSampler(_) | TRWTexture(_)]: TextureSize;
 			case ["size", TSamplerDepth(_)]: TextureSize;  // Depth samplers support size
@@ -1375,6 +1380,8 @@ class Checker {
 			case [_, TVec(_,VFloat), TFloat]: e1.t;
 			case [_, TInt, TVec(_, VFloat)]: toFloat(e1); e2.t;
 			case [_, TVec(_,VFloat), TInt]: toFloat(e2); e1.t;
+			case [_, TInt, TVec(_,VInt)]: e2.t;
+			case [_, TVec(_,VInt), TInt]: e1.t;
 			case [OpMult, TMat4, TMat4]: TMat4;
 			default:
 				var opName = switch( op ) {

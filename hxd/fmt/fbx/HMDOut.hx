@@ -10,7 +10,7 @@ typedef CollideParams = {
 	?maxSubdiv : Int,
 	?maxConvexHulls : Int,
 	?mesh : String,
-	?shapes : Array<ShapeColliderParams>,
+	?shapes : Array<ShapeColliderParams>
 }
 
 typedef ShapeColliderParams = {
@@ -34,6 +34,7 @@ class HMDOut extends BaseLibrary {
 	var filePath : String;
 	var tmp = haxe.io.Bytes.alloc(4);
 	var midsSortRemap : Map<Int, Int>;
+	var lod0Mids : Array<Int>;
 	public var absoluteTexturePath : Bool;
 	public var optimizeSkin = true;
 	public var optimizeMesh = false;
@@ -43,6 +44,8 @@ class HMDOut extends BaseLibrary {
 	public var modelCollides : Map<String, Array<CollideParams>> = [];
 	public var ignoreCollides : Array<String>;
 	var ignoreCollidesCache : Map<Int,Bool> = [];
+	public var collisionThresholdHeight : Float;
+	public var collisionUseLowLod : Bool;
 	public var lowPrecConfig : Map<String,Precision>;
 	public var lodsDecimation : Array<Float>;
 
@@ -639,8 +642,14 @@ class HMDOut extends BaseLibrary {
 		var colVBuf = new FloatBuffer();
 		g.vertexPosition = dataOut.length;
 		if( lowPrecConfig == null ) {
-			for( i in 0...vbuf.length )
-				writeFloat(dataOut, vbuf[i]);
+			for( index in 0...Std.int(vbuf.length / stride) ) {
+				var i = index * stride;
+				for( si in 0...stride ) {
+					if ( si < 3 )
+						colVBuf.push(vbuf[i + si]);
+					writeFloat(dataOut, vbuf[i + si]);
+				}
+			}
 		} else {
 			for( index in 0...Std.int(vbuf.length / stride) ) {
 				var i = index * stride;
@@ -1130,6 +1139,28 @@ class HMDOut extends BaseLibrary {
 		for( g in this.root.getAll("Objects.Geometry") )
 			tmpGeom.set(g.getId(), { setSkin : function(_) { }, vertexCount : function() return Std.int(new hxd.fmt.fbx.Geometry(this, g).getVertices().length/3) } );
 
+		// Sort LODs to ensure we treat them in order after
+		haxe.ds.ArraySort.sort(objects, (a, b) -> {
+			var aName = a.model == null ? null : a.model.getName();
+			if (aName == null) return 0;
+			var aIndexOf = aName.lastIndexOf("_LOD");
+			var aLodLevel = Std.parseInt(aName.substr(aIndexOf + 4));
+			aName = aName.substring(0, aIndexOf);
+
+			var bName = b.model == null ? null : b.model.getName();
+			if (bName == null) return 0;
+			var bIndexOf = bName.lastIndexOf("_LOD");
+			var bLodLevel = Std.parseInt(bName.substr(bIndexOf + 4));
+			bName = bName.substring(0, bIndexOf);
+
+			if (aName == bName && aLodLevel != null && bLodLevel != null) {
+				return aLodLevel > bLodLevel ? 1 : -1;
+			}
+			else {
+				return 0;
+			}
+		});
+
 		var hgeom = new Map();
 		var hgeomCol = new Map();
 		var hmat = new Map<Int,Int>();
@@ -1306,9 +1337,13 @@ class HMDOut extends BaseLibrary {
 			}
 			if( gdata.materials == null )
 				model.materials = mids;
+			else if (lodsInfos.lodLevel > 0)
+				model.materials = [for( id in gdata.materials ) lod0Mids[id]];
 			else
 				model.materials = [for( id in gdata.materials ) mids[id]];
 
+			if (lodsInfos.lodLevel == 0)
+				lod0Mids = mids;
 			var lodsInfos = getLODInfos(model.name);
 			var lodIndex = lodsInfos.lodLevel;
 			var key = lodsInfos.modelName;
@@ -1393,7 +1428,7 @@ class HMDOut extends BaseLibrary {
 
 			for( idx => mc in mcs ) {
 				var params = mc == null && mc.useDefault ? generateCollides : mc;
-				var colliderType = hxd.fmt.hmd.Data.Collider.resolveColliderType(d, model, mc);
+				var colliderType = hxd.fmt.hmd.Data.Collider.resolveColliderType(d, model, mc, collisionThresholdHeight, collisionUseLowLod);
 				var collider : Collider = switch (colliderType) {
 					case Empty:
 						new EmptyCollider();
