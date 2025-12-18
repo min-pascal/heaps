@@ -330,13 +330,13 @@ class MetalOut {
 	}
 
 	function getSamplerType(dim:TexDimension, arr:Bool, ?varName:String) {
-		// Regular samplers always use texture2d<float> etc.
+		// Regular samplers use texture2d<float>, texture arrays use texture2d_array<float>
 		// Depth samplers (TSamplerDepth) use getDepthSamplerType() instead
 		return switch(dim) {
-		case T1D: "texture1d<float>";
-		case T2D: "texture2d<float>";
-		case T3D: "texture3d<float>";
-		case TCube: "texturecube<float>";
+		case T1D: arr ? "texture1d_array<float>" : "texture1d<float>";
+		case T2D: arr ? "texture2d_array<float>" : "texture2d<float>";
+		case T3D: "texture3d<float>";  // No 3D array type in Metal
+		case TCube: arr ? "texturecube_array<float>" : "texturecube<float>";
 		}
 	}
 	
