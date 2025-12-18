@@ -179,6 +179,11 @@ class GlslOut {
 			add(name);
 			if( isES && (arr || dim == T3D) )
 				decl("precision lowp "+name+";");
+		case TSamplerDepth(dim,arr):
+			var name = getSamplerType(dim,arr);
+			add(name);
+			if( isES && (arr || dim == T3D) )
+				decl("precision lowp "+name+";");
 		case TRWTexture(dim, arr, chans):
 			add("image"+dim.getName().substr(1)+(arr?"Array":""));
 		case TStruct(vl):
@@ -313,6 +318,10 @@ class GlslOut {
 				return "texture2D";
 			case TSampler(TCube,_) if( isES2 ):
 				return "textureCube";
+			case TSamplerDepth(T2D,_) if( isES2 ):
+				return "texture2D";
+			case TSamplerDepth(TCube,_) if( isES2 ):
+				return "textureCube";
 			default:
 			}
 		case TextureLod:
@@ -321,6 +330,12 @@ class GlslOut {
 				decl("#extension GL_EXT_shader_texture_lod : enable");
 				return "texture2DLodEXT";
 			case TSampler(TCube,_) if( isES2 ):
+				decl("#extension GL_EXT_shader_texture_lod : enable");
+				return "textureCubeLodEXT";
+			case TSamplerDepth(T2D,_) if( isES2 ):
+				decl("#extension GL_EXT_shader_texture_lod : enable");
+				return "texture2DLodEXT";
+			case TSamplerDepth(TCube,_) if( isES2 ):
 				decl("#extension GL_EXT_shader_texture_lod : enable");
 				return "textureCubeLodEXT";
 			default:
@@ -333,6 +348,11 @@ class GlslOut {
 			case TChannel(_):
 				decl("vec2 _textureSize(sampler2D sampler, int lod) { return vec2(textureSize(sampler, lod)); }");
 			case TSampler(dim,arr):
+				var size = Tools.getDimSize(dim,arr);
+				sufix = (arr?"Array":"");
+				var t = "sampler"+dim.getName().substr(1)+sufix;
+				decl('vec$size _texture${sufix}Size($t sampler, int lod) { return vec$size(textureSize(sampler, lod)); }');
+			case TSamplerDepth(dim,arr):
 				var size = Tools.getDimSize(dim,arr);
 				sufix = (arr?"Array":"");
 				var t = "sampler"+dim.getName().substr(1)+sufix;
