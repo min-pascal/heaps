@@ -1526,7 +1526,8 @@ class MetalDriver extends Driver {
 
 	override function isSupportedFormat(fmt:h3d.mat.Data.TextureFormat):Bool {
 		return switch(fmt) {
-			case RGBA | BGRA | ARGB | RGB8 | RG8 | R8: true;
+			case RGBA | BGRA | RGB8 | RG8 | R8: true;
+      case ARGB: false; // Metal does not have native ARGB format
 			case RGBA16F | RGBA32F | RGB16F | RGB32F: true;
 			case RG16F | RG32F | R16F | R32F: true;
 			case SRGB | SRGB_ALPHA: true;
