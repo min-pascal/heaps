@@ -191,6 +191,53 @@ class MetalOut {
 		return false;
 	}
 
+  // Scan shader expression tree for VertexID usage
+	function scanForVertexId(e:TExpr):Bool {
+		if (e == null) return false;
+		switch (e.e) {
+			case TGlobal(g):
+				if (g == VertexID) return true;
+			case TArray(e1, e2):
+				if (scanForVertexId(e1)) return true;
+				if (scanForVertexId(e2)) return true;
+			case TBinop(_, e1, e2):
+				if (scanForVertexId(e1)) return true;
+				if (scanForVertexId(e2)) return true;
+			case TUnop(_, e1):
+				if (scanForVertexId(e1)) return true;
+			case TVar(_):
+			case TConst(_):
+			case TIf(econd, eif, eelse):
+				if (scanForVertexId(econd)) return true;
+				if (scanForVertexId(eif)) return true;
+				if (eelse != null && scanForVertexId(eelse)) return true;
+			case TCall(ef, args):
+				if (scanForVertexId(ef)) return true;
+				for (a in args)
+					if (scanForVertexId(a)) return true;
+			case TBlock(el):
+				for (ex in el)
+					if (scanForVertexId(ex)) return true;
+			case TSwiz(e1, _):
+				if (scanForVertexId(e1)) return true;
+			case TParenthesis(e1):
+				if (scanForVertexId(e1)) return true;
+			case TMeta(_, _, e1):
+				if (scanForVertexId(e1)) return true;
+			case TFor(_, it, loop):
+				if (scanForVertexId(it)) return true;
+				if (scanForVertexId(loop)) return true;
+			case TWhile(cond, loop, _):
+				if (scanForVertexId(cond)) return true;
+				if (scanForVertexId(loop)) return true;
+			case TReturn(e1):
+				if (e1 != null && scanForVertexId(e1)) return true;
+			case TDiscard:
+			default:
+		}
+		return false;
+	}
+
 	function varName( v : TVar ) {
 		var n = varNames.get(v.id);
 		if( n != null )
