@@ -119,6 +119,7 @@ class MetalOut {
 	var isCompute : Bool;
 	var isFragment : Bool;
 	var usesInstanceId : Bool;
+	var usesVertexId : Bool;
 	var allNames : Map<String,Int>;
 	
 	// MRT (Multiple Render Targets) support
@@ -1074,6 +1075,7 @@ class MetalOut {
 		isFragment = false;
 		isCompute = false;
 		usesInstanceId = false;
+		usesVertexId = false;
 
 		if( s.funs.length != 1 ) throw "assert";
 		var f = s.funs[0];
@@ -1132,13 +1134,30 @@ class MetalOut {
 
 			// Check if shader uses instance_id
 			usesInstanceId = scanForInstanceId(f.expr);
+			usesVertexId = scanForVertexId(f.expr);
+
+			// Check if any input variables have PerInstance qualifier
+			// If so, we need to reserve buffer index 1 for instance data
+			var hasPerInstanceInputs = false;
+			for( v in s.vars ) {
+				if( v.kind == Input && v.qualifiers != null ) {
+					for( q in v.qualifiers ) {
+						switch( q ) {
+						case PerInstance(_): hasPerInstanceInputs = true;
+						default:
+						}
+					}
+				}
+			}
 
 			// Vertex main function
 			add("vertex VertexOut vertex_main(VertexIn input [[stage_in]]");
 			
 			// Add uniform buffer parameters (Global and Param kinds)
-			// Buffer index 0 is reserved for vertex data (via [[stage_in]]), so uniforms start at index 1
-			var bufferIndex = 1;
+			// Buffer index 0 is reserved for per-vertex data (via [[stage_in]])
+			// Buffer index 1 is reserved for per-instance data if any PerInstance inputs exist
+			// Uniforms start at buffer index 1 or 2 depending on whether instance buffers are used
+			var bufferIndex = hasPerInstanceInputs ? 2 : 1;
 			for( v in s.vars ) {
 				if( v.kind == Global || v.kind == Param ) {
 					add(", constant ");
@@ -1172,7 +1191,12 @@ class MetalOut {
 			if( usesInstanceId ) {
 				add(", uint instance_id [[instance_id]]");
 			}
-			
+
+			// Add vertex_id parameter if the shader uses vertex id
+			if( usesVertexId ) {
+				add(", uint vertex_id [[vertex_id]]");
+			}
+
 			add(") {\n");
 			add("\tVertexOut output;\n");
 
@@ -1360,6 +1384,11 @@ class MetalOut {
 						add("constant ");
 						var old = v.type;
 						switch( v.type ) {
+						case TBuffer(t, _, _):
+							v.type = t;
+							addType(v.type);
+							v.type = old;
+							add(" *");
 						case TArray(t, _):
 							v.type = t;
 							addType(v.type);
