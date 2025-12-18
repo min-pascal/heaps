@@ -586,6 +586,26 @@ class MetalOut {
 						add("1024.0, 1024.0");  // Assuming 1024x1024 shadow map
 						add(")), 0), 0.0, 0.0, 1.0)");  // Wrap in float4, level 0
 					} else {
+						// Check if this is a texture array (coords are float3 for 2D array)
+						var isTextureArray = false;
+						switch(args[0].e) {
+						case TArray({ e: TVar(v) }, _):
+							switch(v.type) {
+							case TSampler(_, arr):
+								isTextureArray = arr;
+							case TArray(TSampler(_, arr), _):
+								isTextureArray = arr;
+							default:
+							}
+						case TVar(v):
+							switch(v.type) {
+							case TSampler(_, arr):
+								isTextureArray = arr;
+							default:
+							}
+						default:
+						}
+
 						// Regular texture sampling
 						writeExpr(args[0]);  // This outputs the texture
 						add(".sample(");
@@ -597,7 +617,18 @@ class MetalOut {
 							add("0");  // Fallback to sampler 0
 						}
 						add("], ");
-						writeExpr(args[1]);  // UV coordinates
+
+						if (isTextureArray) {
+							// For texture2d_array: sample(sampler, float2 coords, uint array_index)
+							// args[1] is float3(uv.x, uv.y, slice)
+							add("(");
+							writeExpr(args[1]);
+							add(").xy, uint((");
+							writeExpr(args[1]);
+							add(").z)");
+						} else {
+							writeExpr(args[1]);  // UV coordinates
+						}
 						add(")");
 					}
 				} else {
