@@ -52,6 +52,7 @@ private class CompiledMetalShader {
 	public var pipelineState : Dynamic; // id<MTLRenderPipelineState> - DEPRECATED, use pipelineCache
 	public var vertexDescriptor : Dynamic; // MTLVertexDescriptor
 	public var pipelineKey : String;
+	public var hasPerInstanceInputs : Bool; // Track if shader has per-instance inputs
 	
 	// Cache of pipeline states per buffer format stride
 	public var pipelineCache : Map<Int, Dynamic>; // stride -> pipelineState (legacy)
@@ -60,6 +61,7 @@ private class CompiledMetalShader {
 	public function new() {
 		pipelineCache = new Map();
 		pipelineCacheStr = new Map();
+		hasPerInstanceInputs = false;
 	}
 }
 
@@ -114,8 +116,8 @@ private class MetalNative {
 	public static function set_fragment_texture(encoder:Dynamic, texture:Dynamic, index:Int):Void {}
 	public static function set_fragment_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
 	public static function draw_primitives(encoder:Dynamic, primitiveType:Int, vertexStart:Int, vertexCount:Int):Void {}
-	public static function draw_indexed_primitives(encoder:Dynamic, primitiveType:Int, indexCount:Int, indexBuffer:Dynamic, indexOffset:Int):Void {}
-	public static function draw_indexed_primitives_instanced(encoder:Dynamic, primitiveType:Int, indexCount:Int, indexBuffer:Dynamic, indexOffset:Int, instanceCount:Int):Void {}
+	public static function draw_indexed_primitives(encoder:Dynamic, primitiveType:Int, indexCount:Int, indexBuffer:Dynamic, indexOffset:Int, is32bit:Int):Void {}
+	public static function draw_indexed_primitives_instanced(encoder:Dynamic, primitiveType:Int, indexCount:Int, indexBuffer:Dynamic, indexOffset:Int, instanceCount:Int, is32bit:Int):Void {}
 	public static function end_encoding(encoder:Dynamic):Void {}
 
 	// Viewport and render state
@@ -136,6 +138,7 @@ class MetalDriver extends Driver {
 	// State management following established pattern
 	var currentShader : CompiledMetalShader;
 	var currentBuffer : h3d.Buffer;
+	var currentInstanceBuffer : h3d.Buffer;  // Track instance buffer for per-instance rendering
 	var currentIndexBuffer : h3d.Buffer;
 	var currentCommandBuffer : Dynamic;
 	var currentRenderEncoder : Dynamic;
@@ -569,6 +572,29 @@ class MetalDriver extends Driver {
 		var compiled = new CompiledMetalShader();
 		compiled.id = shader.id;
 
+		// Check if any vertex input variables have PerInstance qualifier
+		// Also build the format from shader inputs
+		var formatInputs:Array<hxd.BufferFormat.BufferInput> = [];
+		if (shader.vertex != null && shader.vertex.data != null) {
+			for (v in shader.vertex.data.vars) {
+				if (v.kind == Input) {
+					// Check for PerInstance qualifier
+					if (v.qualifiers != null) {
+						for (q in v.qualifiers) {
+							switch (q) {
+								case PerInstance(_): compiled.hasPerInstanceInputs = true;
+								default:
+							}
+						}
+					}
+					// Add to format (convert hxsl type to buffer format type)
+					var dxType = hxd.BufferFormat.InputFormat.fromHXSL(v.type);
+					formatInputs.push(new hxd.BufferFormat.BufferInput(v.name, dxType));
+				}
+			}
+		}
+		compiled.format = hxd.BufferFormat.make(formatInputs);
+
     // Compile vertex shader using hxsl.MetalOut
     if (shader.vertex != null && shader.vertex.data != null) {
       var vertexSource:String = null;
@@ -769,11 +795,28 @@ class MetalDriver extends Driver {
 
 	function generateVertexDescriptor(shader:hxsl.RuntimeShader, ?bufferFormat:hxd.BufferFormat):String {
 		// Generate Metal vertex descriptor from shader inputs
+		// Format: "name:type" for per-vertex, "name:type:1:divisor" for per-instance
 		if (shader.vertex != null && shader.vertex.data != null) {
 			var inputs = [];
 			for (v in shader.vertex.data.vars) {
 				if (v.kind == Input) {
-					inputs.push('${v.name}:${getMetalVertexType(v.type)}');
+					// Check for PerInstance qualifier
+					var divisor = 0;
+					if (v.qualifiers != null) {
+						for (q in v.qualifiers) {
+							switch (q) {
+								case PerInstance(n): divisor = n;
+								default:
+							}
+						}
+					}
+					if (divisor > 0) {
+						// Per-instance attribute: name:type:bufferIndex:divisor
+						inputs.push('${v.name}:${getMetalVertexType(v.type)}:1:$divisor');
+					} else {
+						// Per-vertex attribute: name:type
+						inputs.push('${v.name}:${getMetalVertexType(v.type)}');
+					}
 				}
 			}
 			var desc = inputs.join(',');
@@ -813,8 +856,14 @@ class MetalDriver extends Driver {
 		
 		// Create new pipeline with correct stride and blend mode
 		var vertexDesc = generateVertexDescriptor(shader);
-		// Append stride to descriptor
+		
+		// Always append stride for buffer 0 (main vertex buffer)
 		vertexDesc += '|stride:' + bufferStride;
+		
+		// For per-instance shaders, also append instance buffer stride
+		if (compiledShader.hasPerInstanceInputs && currentInstanceBuffer != null) {
+			vertexDesc += '|instride:' + currentInstanceBuffer.format.strideBytes;
+		}
 		
 		pipeline = MetalNative.create_render_pipeline(
 			compiledShader.vertex != null ? compiledShader.vertex.shader : null,
@@ -848,12 +897,82 @@ class MetalDriver extends Driver {
 			buffer.vbuf = allocBuffer(buffer);
 		}
 		currentBuffer = buffer;
+		currentInstanceBuffer = null;  // Clear instance buffer for simple single-buffer rendering
 
 		// Bind the buffer to the render encoder if we have an active encoder
 		if (currentRenderEncoder != null && buffer.vbuf != null) {
 			MetalNative.set_vertex_buffer(currentRenderEncoder, buffer.vbuf, 0, 0);
 		}
 	}
+
+	override function selectMultiBuffers(format:hxd.BufferFormat.MultiFormat, buffers:Array<h3d.Buffer>) {
+		// Store buffers for later binding during draw calls
+		if (buffers.length == 0) return;
+		
+		// Use the format mapping to bind buffers correctly
+		// The mapping tells us which buffer each shader attribute comes from
+		if (currentShader == null || currentShader.format == null) return;
+		
+		var map = format.resolveMapping(currentShader.format);
+		
+		// Find the main vertex buffer (non-instance) and instance buffer from the mapping
+		var mainBufferIndex = -1;
+		var instanceBufferIndex = -1;
+		
+		// Check the shader inputs to find which buffer index is per-vertex vs per-instance
+		if (currentRuntimeShader != null && currentRuntimeShader.vertex != null && currentRuntimeShader.vertex.data != null) {
+			var attrIndex = 0;
+			for (v in currentRuntimeShader.vertex.data.vars) {
+				if (v.kind == Input) {
+					if (attrIndex < map.length) {
+						var inf = map[attrIndex];
+						var hasPerInstance = false;
+						if (v.qualifiers != null) {
+							for (q in v.qualifiers) {
+								switch (q) {
+									case PerInstance(_): hasPerInstance = true;
+									default:
+								}
+							}
+						}
+						if (hasPerInstance) {
+							instanceBufferIndex = inf.bufferIndex;
+						} else {
+							if (mainBufferIndex < 0) mainBufferIndex = inf.bufferIndex;
+						}
+					}
+					attrIndex++;
+				}
+			}
+		}
+		
+		// Allocate and bind buffers
+		for (i in 0...buffers.length) {
+			var buf = buffers[i];
+			if (buf != null && buf.vbuf == null) {
+				buf.vbuf = allocBuffer(buf);
+			}
+		}
+		
+		// Bind the main vertex buffer to Metal buffer index 0
+		if (mainBufferIndex >= 0 && mainBufferIndex < buffers.length && buffers[mainBufferIndex] != null) {
+			currentBuffer = buffers[mainBufferIndex];
+			if (currentRenderEncoder != null && currentBuffer.vbuf != null) {
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentBuffer.vbuf, 0, 0);
+			}
+		}
+		
+		// Bind the instance buffer to Metal buffer index 1 (if exists)
+		// Also store it for later rebinding during draw calls
+		currentInstanceBuffer = null;
+		if (instanceBufferIndex >= 0 && instanceBufferIndex < buffers.length && buffers[instanceBufferIndex] != null) {
+			currentInstanceBuffer = buffers[instanceBufferIndex];
+			if (currentRenderEncoder != null && currentInstanceBuffer.vbuf != null) {
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentInstanceBuffer.vbuf, 0, 1);
+			}
+		}
+	}
+
 
 	override function uploadBufferData(b:h3d.Buffer, startVertex:Int, vertexCount:Int, buf:hxd.FloatBuffer, bufPos:Int) {
 		if (b.vbuf == null) {
@@ -933,8 +1052,10 @@ class MetalDriver extends Driver {
 		}
 
 		// Bind uniform buffers
-		// Buffer index 0 is reserved for vertex data (via stage_in), uniforms start at index 1
-		var vertexBufferIndex = 1;  // Start at 1, skip 0 (used for vertex data)
+		// Buffer index 0 is reserved for per-vertex data (via stage_in)
+		// Buffer index 1 is reserved for per-instance data if hasPerInstanceInputs is true
+		// Uniforms start at buffer index 1 or 2 depending on whether instance buffers are used
+		var vertexBufferIndex = currentShader.hasPerInstanceInputs ? 2 : 1;
 		if (currentShader.vertex != null) {
 			if (currentShader.vertex.globals != null) {
 				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, 0, vertexBufferIndex);
@@ -970,6 +1091,11 @@ class MetalDriver extends Driver {
 		if (currentBuffer != null && currentBuffer.vbuf != null) {
 			MetalNative.set_vertex_buffer(currentRenderEncoder, currentBuffer.vbuf, 0, 0);
 		}
+		
+		// Bind instance buffer to index 1 (for per-instance [[stage_in]] attributes)
+		if (currentInstanceBuffer != null && currentInstanceBuffer.vbuf != null) {
+			MetalNative.set_vertex_buffer(currentRenderEncoder, currentInstanceBuffer.vbuf, 0, 1);
+		}
 
 		if (ibuf != null) {
 			// Indexed draw call
@@ -978,9 +1104,10 @@ class MetalDriver extends Driver {
 			}
 
 			var indexCount = ntriangles * 3;
-			var indexOffset = startIndex * 2; // Assuming 16-bit indices (2 bytes each)
+			var is32bit = ibuf.format.strideBytes == 4 ? 1 : 0;
+			var indexOffset = startIndex * ibuf.format.strideBytes;
 
-			MetalNative.draw_indexed_primitives(currentRenderEncoder, 3, indexCount, ibuf.vbuf, indexOffset);
+			MetalNative.draw_indexed_primitives(currentRenderEncoder, 3, indexCount, ibuf.vbuf, indexOffset, is32bit);
 		} else {
 			// Non-indexed draw call
 			var vertexCount = ntriangles * 3;
@@ -1021,7 +1148,9 @@ class MetalDriver extends Driver {
 		}
 
 		// Bind uniform buffers (same as regular draw)
-		var vertexBufferIndex = 1;
+		// Buffer index 0 is reserved for per-vertex data (via stage_in)
+		// Buffer index 1 is reserved for per-instance data if hasPerInstanceInputs is true
+		var vertexBufferIndex = currentShader.hasPerInstanceInputs ? 2 : 1;
 		if (currentShader.vertex != null) {
 			if (currentShader.vertex.globals != null) {
 				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, 0, vertexBufferIndex);
@@ -1055,6 +1184,11 @@ class MetalDriver extends Driver {
 		if (currentBuffer != null && currentBuffer.vbuf != null) {
 			MetalNative.set_vertex_buffer(currentRenderEncoder, currentBuffer.vbuf, 0, 0);
 		}
+		
+		// Bind instance buffer to index 1 (for per-instance [[stage_in]] attributes)
+		if (currentInstanceBuffer != null && currentInstanceBuffer.vbuf != null) {
+			MetalNative.set_vertex_buffer(currentRenderEncoder, currentInstanceBuffer.vbuf, 0, 1);
+		}
 
 		// Perform instanced draw
 		if (ibuf != null) {
@@ -1063,10 +1197,11 @@ class MetalDriver extends Driver {
 			}
 
 			var indexCount = commands.indexCount;
-			var indexOffset = commands.startIndex * 2; // 16-bit indices
+			var is32bit = ibuf.format.strideBytes == 4 ? 1 : 0;
+			var indexOffset = commands.startIndex * ibuf.format.strideBytes;
 			var instanceCount = commands.commandCount;
 
-			MetalNative.draw_indexed_primitives_instanced(currentRenderEncoder, 3, indexCount, ibuf.vbuf, indexOffset, instanceCount);
+			MetalNative.draw_indexed_primitives_instanced(currentRenderEncoder, 3, indexCount, ibuf.vbuf, indexOffset, instanceCount, is32bit);
 		}
 		
 		// Mark backbuffer rendering if applicable
