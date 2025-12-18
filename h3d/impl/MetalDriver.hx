@@ -1494,11 +1494,15 @@ class MetalDriver extends Driver {
 			
 			// Set culling mode
 			// Metal cullMode: 0 = None, 1 = Front, 2 = Back
-			var cullMode = switch(pass.culling) {
-				case None: 0;
-				case Front: 1;
-				case Back: 2;
-				case Both: 0; // Metal doesn't support Both, treat as None for now (will cull nothing)
+			var cullMode = if (pass.wireframe) {
+				0; // None - allows seeing back faces in wireframe
+			} else {
+				switch(pass.culling) {
+					case None: 0;
+					case Front: 1;
+					case Back: 2;
+					case Both: 0; // Metal doesn't support Both, treat as None for now (will cull nothing)
+				}
 			}
 			MetalNative.set_cull_mode(currentRenderEncoder, cullMode);
 			
