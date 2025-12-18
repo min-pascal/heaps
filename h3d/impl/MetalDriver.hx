@@ -83,7 +83,7 @@ private class MetalNative {
 	public static function dispose_buffer(buffer:Dynamic):Void {}
 
 	// Texture management
-	public static function create_texture(width:Int, height:Int, format:Int, usage:Int, mipmapped:Bool, isCube:Bool):Dynamic { return null; }
+	public static function create_texture(width:Int, height:Int, format:Int, usage:Int, mipmapped:Bool, isCube:Bool, arrayLength:Int):Dynamic { return null; }
 	public static function upload_texture_data(texture:Dynamic, data:hl.Bytes, width:Int, height:Int, level:Int, slice:Int):Bool { return false; }
 	public static function capture_texture_pixels(texture:Dynamic, data:hl.Bytes, width:Int, height:Int, level:Int):Bool { return false; }
 	public static function generate_mipmaps(texture:Dynamic):Void {}
@@ -201,7 +201,7 @@ class MetalDriver extends Driver {
 
 	function createDummyWhiteTexture() {
 		// Create a 1x1 white texture (RGBA8 format)
-		dummyWhiteTexture = MetalNative.create_texture(1, 1, 0, 1, false, false);  // format=0 (RGBA8), usage=1 (shader read), no mipmaps, not cube
+		dummyWhiteTexture = MetalNative.create_texture(1, 1, 0, 1, false, false, 1);  // format=0 (RGBA8), usage=1 (shader read), no mipmaps, not cube, 1 layer
 		if (dummyWhiteTexture != null) {
 			// Upload white pixel data (255, 255, 255, 255)
 			var whitePixel = new hl.Bytes(4);
@@ -453,7 +453,8 @@ class MetalDriver extends Driver {
 		var mipmapped = t.flags.has(MipMapped);
 		var isCube = t.flags.has(Cube);
 
-		var metalTexture = MetalNative.create_texture(t.width, t.height, format, usage, mipmapped, isCube);
+		var arrayLength = t.layerCount > 0 ? t.layerCount : 1;
+		var metalTexture = MetalNative.create_texture(t.width, t.height, format, usage, mipmapped, isCube, arrayLength);
 		if (metalTexture == null) {
 			throw "Failed to allocate Metal texture " + t.width + "x" + t.height;
 		}
@@ -483,7 +484,7 @@ class MetalDriver extends Driver {
 		var mipmapped = false; // Depth buffers typically don't use mipmaps
 		var isCube = false;
 
-		var metalTexture = MetalNative.create_texture(t.width, t.height, format, usage, mipmapped, isCube);
+		var metalTexture = MetalNative.create_texture(t.width, t.height, format, usage, mipmapped, isCube, 1);
 		if (metalTexture == null) {
 			throw "Failed to allocate Metal depth buffer " + t.width + "x" + t.height;
 		}
