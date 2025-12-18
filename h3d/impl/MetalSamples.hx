@@ -95,7 +95,7 @@ class MetalSamples {
     }
   }
 
-  public function updateTriangleBuffer(buffer:h3d.impl.MetalDriver.MetalBufferHandle, data:Array<Float>, offset:Int = 0) {
+  public function updateTriangleBuffer(buffer:Dynamic, data:Array<Float>, offset:Int = 0) {
     // Convert the data array to bytes
     var dataBytesSize = data.length * 4; // 4 bytes per float
     var dataBytes = new hl.Bytes(dataBytesSize);
