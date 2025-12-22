@@ -1528,7 +1528,19 @@ class MetalOut {
           if (!isTextureType(v.type)) {
             if (!first) add(", ");
             first = false;
-            add("constant ");
+            
+            // Determine qualifier based on buffer kind
+            var qualifier = switch (v.type) {
+              case TBuffer(_, _, kind):
+                switch (kind) {
+                  case RW, RWPartial: "device ";
+                  case Storage, StoragePartial: "device ";
+                  default: "constant ";
+                };
+              default: "constant ";
+            };
+            add(qualifier);
+            
             var old = v.type;
             switch (v.type) {
               case TBuffer(t, _, _):
