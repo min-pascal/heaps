@@ -126,6 +126,14 @@ private class MetalNative {
 	
 	// Debug/logging control (0=errors, 1=warnings, 2=info, 3=verbose)
 	public static function set_debug_level(level:Int):Void {}
+
+	// Compute shader support
+	public static function create_compute_pipeline(source:hl.Bytes, functionName:hl.Bytes):Dynamic { return null; }
+	public static function set_compute_pipeline(pipeline:Dynamic):Void {}
+	public static function set_compute_texture(texture:Dynamic, index:Int):Void {}
+	public static function set_compute_buffer(buffer:Dynamic, index:Int):Void {}
+	public static function dispatch_compute(cmdBuffer:Dynamic, x:Int, y:Int, z:Int):Bool { return false; }
+	public static function memory_barrier(cmdBuffer:Dynamic):Void {}
 }
 
 class MetalDriver extends Driver {
@@ -1761,6 +1769,70 @@ class MetalDriver extends Driver {
 	override function getNativeShaderCode(shader:hxsl.RuntimeShader):String {
 		// Return compiled shader code for debugging - not critical
 		return "Metal shader code";
+	}
+
+	// Compute shader support
+	override function computeDispatch(x:Int = 1, y:Int = 1, z:Int = 1, barrier:Bool = true) {
+		if (currentCommandBuffer == null) {
+			throw "Cannot dispatch compute without an active command buffer";
+		}
+
+		// End current render encoder if active
+		var hadEncoder = currentRenderEncoder != null;
+		if (hadEncoder) {
+			MetalNative.end_encoding(currentRenderEncoder);
+			currentRenderEncoder = null;
+		}
+
+		// Dispatch compute shader
+		if (!MetalNative.dispatch_compute(currentCommandBuffer, x, y, z)) {
+			throw "Failed to dispatch compute shader";
+		}
+
+		// Add memory barrier if requested (ensures compute writes are visible)
+		if (barrier) {
+			memoryBarrier();
+		}
+
+		// Resume render encoder if we had one
+		if (hadEncoder && currentTargets.length == 0) {
+			currentRenderEncoder = MetalNative.resume_render_pass(currentCommandBuffer);
+			if (currentRenderEncoder != null) {
+				var engine = h3d.Engine.getCurrent();
+				if (engine != null) {
+					MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast engine.width, cast engine.height);
+				}
+			}
+		}
+	}
+
+	override function memoryBarrier() {
+		if (currentCommandBuffer == null) {
+			return;
+		}
+
+		// Insert a barrier to ensure compute writes complete before subsequent reads
+		MetalNative.memory_barrier(currentCommandBuffer);
+	}
+
+	// Helper: Create and set up compute shader pipeline from MSL source
+	public function createComputePipeline(source:String, functionName:String):Dynamic {
+		var sourceBytes = @:privateAccess source.toUtf8();
+		var funcBytes = @:privateAccess functionName.toUtf8();
+		return MetalNative.create_compute_pipeline(sourceBytes, funcBytes);
+	}
+
+	// Helper: Set compute resources before dispatch
+	public function setComputeResources(pipeline:Dynamic, ?texture:h3d.mat.Texture, ?buffer:h3d.Buffer) {
+		if (pipeline != null) {
+			MetalNative.set_compute_pipeline(pipeline);
+		}
+		if (texture != null && texture.t != null) {
+			MetalNative.set_compute_texture(texture.t.t, 0);
+		}
+		if (buffer != null && buffer.vbuf != null) {
+			MetalNative.set_compute_buffer(buffer.vbuf, 0);
+		}
 	}
 }
 
