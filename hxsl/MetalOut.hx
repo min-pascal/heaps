@@ -1,5 +1,5 @@
 package hxsl;
-import hxsl.Ast;
+using hxsl.Ast;
 
 class MetalOut {
 
