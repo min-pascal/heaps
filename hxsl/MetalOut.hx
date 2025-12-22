@@ -73,10 +73,10 @@ class MetalOut {
     set(InstanceID, "instance_id");
     set(FragCoord, "_fragCoord");
     set(FrontFacing, "is_front_facing");
-    set(ComputeVar_LocalInvocation, "thread_position_in_threadgroup");
-    set(ComputeVar_GlobalInvocation, "thread_position_in_grid");
+    set(ComputeVar_LocalInvocation, "int3(thread_position_in_threadgroup)");
+    set(ComputeVar_GlobalInvocation, "int3(thread_position_in_grid)");
     set(ComputeVar_LocalInvocationIndex, "thread_index_in_threadgroup");
-    set(ComputeVar_WorkGroup, "threadgroup_position_in_grid");
+    set(ComputeVar_WorkGroup, "int3(threadgroup_position_in_grid)");
     set(Mod, "fmod"); // Metal uses fmod() for float modulo
 
     for (g in gl)
@@ -96,6 +96,7 @@ class MetalOut {
   var usesInstanceId:Bool;
   var usesVertexId:Bool;
   var allNames:Map<String, Int>;
+  var computeLayout = [1, 1, 1];
 
   // MRT (Multiple Render Targets) support
   var outputCount:Int;
@@ -531,6 +532,20 @@ class MetalOut {
       case TCall(func, args):
         // Special handling for texture sampling in Metal
         switch (func.e) {
+          case TGlobal(SetLayout):
+            // SetLayout sets compute shader thread group size - skip in expression output
+            // It's extracted during collectGlobals and used in kernel signature
+            // Do nothing here
+          case TGlobal(ImageStore):
+            // ImageStore for compute shaders: tex.write(color, coords)
+            if (args.length == 3) {
+              writeExpr(args[0]); // Texture
+              add(".write(");
+              writeExpr(args[2]); // Color value (swap order - write takes color first)
+              add(", uint2(");
+              writeExpr(args[1]); // UV coordinates as uint2
+              add("))");
+            }
           case TGlobal(Texture | TextureLod):
             // Metal texture sampling: texture.sample(sampler, coords) or depth2d.read(coords)
             // HXSL: texture(tex, coords) or textureLod(tex, coords, lod)
@@ -1055,11 +1070,25 @@ class MetalOut {
     }
   }
 
+  function collectGlobals(m:Map<TGlobal, Type>, e:TExpr) {
+    switch (e.e) {
+      case TGlobal(g): m.set(g, e.t);
+      case TCall({ e : TGlobal(SetLayout) }, [{ e : TConst(CInt(x)) }, { e : TConst(CInt(y)) }, { e : TConst(CInt(z)) }]):
+        computeLayout = [x, y, z];
+      case TCall({ e : TGlobal(SetLayout) }, [{ e : TConst(CInt(x)) }, { e : TConst(CInt(y)) }]):
+        computeLayout = [x, y, 1];
+      case TCall({ e : TGlobal(SetLayout) }, [{ e : TConst(CInt(x)) }]):
+        computeLayout = [x, 1, 1];
+      default: e.iter(collectGlobals.bind(m));
+    }
+  }
+
   public function run(s:ShaderData) {
     locals = new Map();
     decls = [];
     buf = new StringBuf();
     exprValues = [];
+    computeLayout = [1, 1, 1];
 
     // Reset shader type flags
     isVertex = false;
@@ -1074,7 +1103,10 @@ class MetalOut {
     switch (f.kind) {
       case Vertex: isVertex = true;
       case Fragment: isFragment = true;
-      case Main: isCompute = true;
+      case Main: 
+        isCompute = true;
+        // Extract compute layout from SetLayout calls
+        collectGlobals(new Map(), f.expr);
       default: throw "Unsupported shader kind";
     }
 
@@ -1484,7 +1516,84 @@ class MetalOut {
     }
     else if (isCompute) {
       add("kernel void compute_main(");
-      add("uint3 thread_position [[thread_position_in_grid]]) {\n");
+      
+      // Add compute shader parameters
+      var bufferIndex = 0;
+      var textureIndex = 0;
+      var first = true;
+      
+      // First pass: add buffers (globals, params)
+      for (v in s.vars) {
+        if (v.kind == Param || v.kind == Global) {
+          if (!isTextureType(v.type)) {
+            if (!first) add(", ");
+            first = false;
+            add("constant ");
+            var old = v.type;
+            switch (v.type) {
+              case TBuffer(t, _, _):
+                v.type = t;
+                addType(v.type);
+                v.type = old;
+                add(" *");
+              case TArray(t, _):
+                v.type = t;
+                addType(v.type);
+                v.type = old;
+                add(" *");
+              default:
+                addType(v.type);
+                add(" *");
+            }
+            add(varName(v));
+            add(" [[buffer(" + bufferIndex + ")]]");
+            bufferIndex++;
+          }
+        }
+      }
+      
+      // Second pass: add textures
+      for (v in s.vars) {
+        if (v.kind == Param || v.kind == Global) {
+          if (isTextureType(v.type)) {
+            if (!first) add(", ");
+            first = false;
+            
+            // Check if this is a writable texture
+            var isWritable = switch (v.type) {
+              case TSampler(_): false;
+              default: true; // Assume non-sampler textures are writable
+            };
+            
+            if (isWritable) {
+              add("texture2d<float, access::read_write> ");
+            } else {
+              add("texture2d<float> ");
+            }
+            add(varName(v));
+            add(" [[texture(" + textureIndex + ")]]");
+            textureIndex++;
+          }
+        }
+      }
+      
+      // Add thread position parameter
+      if (!first) add(", ");
+      add("uint3 thread_position_in_grid [[thread_position_in_grid]]) {\n");
+
+      // Don't redeclare params/globals - they're already pointers in the signature
+      // Just use them directly
+      
+      // Declare local variables
+      for (v in s.vars) {
+        if (v.kind == Local) {
+          add("\t");
+          addType(v.type);
+          add(" ");
+          add(varName(v));
+          add(";\n");
+        }
+      }
 
       addExpr(f.expr, "\t");
 
