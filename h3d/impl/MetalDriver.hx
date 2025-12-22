@@ -165,6 +165,7 @@ class MetalDriver extends Driver {
 	var currentComputeShader : CompiledMetalShader;
 	var currentComputeRuntimeShader : hxsl.RuntimeShader;
 	var pendingComputeTextures : Array<h3d.mat.Texture> = [];
+	var pendingComputeBuffers : Array<h3d.Buffer> = [];
 	
 	// Sampler state cache (similar to DirectX driver)
 	var samplerStates : Map<Int, Dynamic>;  // bits -> MTLSamplerState
@@ -1717,6 +1718,19 @@ class MetalDriver extends Driver {
 				}
 
 			case Buffers:
+				// For compute shaders, save buffers to be bound during dispatch
+				if (currentRuntimeShader != null && currentRuntimeShader.mode == Compute) {
+					pendingComputeBuffers = [];
+					if (buffers.vertex != null && buffers.vertex.buffers != null) {
+						for (buf in buffers.vertex.buffers) {
+							if (buf != null) {
+								pendingComputeBuffers.push(buf);
+							}
+						}
+					}
+					return;
+				}
+				
 				// Handle buffer bindings for MeshBatch and other instanced rendering
 				// These are storage/uniform buffers like Batch_Buffer containing per-instance data
 				if (currentRenderEncoder == null) {
@@ -1895,12 +1909,22 @@ class MetalDriver extends Driver {
 		MetalNative.set_compute_pipeline(currentShader.vertex.shader);
 		
 		// Bind parameter buffer if available (contains shader params like textureSize)
+		var bufferIndex = 0;
 		if (currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsSize > 0) {
 			var currentBuffer = currentShader.vertex.paramsBuffers[currentFrameIndex];
 			if (currentBuffer != null) {
 				// Use offset for current draw call
 				var offset = drawCallIndex * (currentShader.vertex.paramsSize << 4);
-				MetalNative.set_compute_buffer(currentBuffer, 0);
+				MetalNative.set_compute_buffer(currentBuffer, bufferIndex);
+				bufferIndex++;
+			}
+		}
+		
+		// Bind compute buffers (RWBuffer, StorageBuffer, etc.) that were saved in uploadShaderBuffers
+		for (buf in pendingComputeBuffers) {
+			if (buf != null && buf.vbuf != null) {
+				MetalNative.set_compute_buffer(buf.vbuf, bufferIndex);
+				bufferIndex++;
 			}
 		}
 		
