@@ -481,9 +481,7 @@ class MetalDriver extends Driver {
 			internalFmt: format,
 			pixelFmt: format,
 			bits: getFormatBits(t.format),
-			bind: 0,
-			bias: 0.0,
-			startMip: 0
+			bind: 0
 		};
 	}
 
@@ -509,9 +507,7 @@ class MetalDriver extends Driver {
 			internalFmt: format,
 			pixelFmt: format,
 			bits: 0,
-			bind: 0,
-			bias: 0.0,
-			startMip: 0
+			bind: 0
 		};
 	}
 

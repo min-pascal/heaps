@@ -10,8 +10,8 @@ typedef Texture = { t : js.html.webgl.Texture, width : Int, height : Int, intern
 typedef Query = {};
 #elseif metal
 typedef GPUBuffer = Dynamic;
-typedef Texture = { t : Dynamic, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int, bias : Float, startMip : Int };
-typedef Query = {};
+typedef Texture = { t : Dynamic, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int #if multidriver, driver : Driver #end };
+typedef Query = { q : Dynamic, kind : QueryKind };
 #elseif hlsdl
 typedef GPUBuffer = sdl.GL.Buffer;
 typedef Texture = { t : sdl.GL.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int #if multidriver, driver : Driver #end };
