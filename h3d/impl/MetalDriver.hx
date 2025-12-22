@@ -98,6 +98,7 @@ private class MetalNative {
 
 	// Shader compilation
 	public static function compile_shader(source:String, shaderType:Int):Dynamic { return null; }
+	public static function create_compute_pipeline_from_function(func:Dynamic):Dynamic { return null; }
 	public static function create_render_pipeline(vertexShader:Dynamic, fragmentShader:Dynamic, vertexDesc:String, blendSrc:Int, blendDst:Int, blendAlphaSrc:Int, blendAlphaDst:Int, blendOp:Int, blendAlphaOp:Int):Dynamic { return null; }
 	public static function dispose_pipeline(pipeline:Dynamic):Void {}
 
@@ -159,6 +160,11 @@ class MetalDriver extends Driver {
 	var shaders : Map<Int, CompiledMetalShader>;
 	var shaderCompiler : hxsl.MetalOut;
 	var currentRuntimeShader : hxsl.RuntimeShader;  // Keep reference to current runtime shader
+	
+	// Compute shader support
+	var currentComputeShader : CompiledMetalShader;
+	var currentComputeRuntimeShader : hxsl.RuntimeShader;
+	var pendingComputeTextures : Array<h3d.mat.Texture> = [];
 	
 	// Sampler state cache (similar to DirectX driver)
 	var samplerStates : Map<Int, Dynamic>;  // bits -> MTLSamplerState
@@ -575,6 +581,11 @@ class MetalDriver extends Driver {
 	function compileShader(shader:hxsl.RuntimeShader):CompiledMetalShader {
 		var compiled = new CompiledMetalShader();
 		compiled.id = shader.id;
+		
+		// Check if this is a compute shader
+		if (shader.mode == Compute) {
+			return compileComputeShader(shader, compiled);
+		}
 
 		// Check if any vertex input variables have PerInstance qualifier
 		// Also build the format from shader inputs
@@ -724,6 +735,85 @@ class MetalDriver extends Driver {
 		}
 
 		// Don't create pipeline here - it will be created lazily in draw() when we know the buffer format
+		return compiled;
+	}
+	
+	function compileComputeShader(shader:hxsl.RuntimeShader, compiled:CompiledMetalShader):CompiledMetalShader {
+		// Compile compute shader using hxsl.MetalOut
+		if (shader.compute == null || shader.compute.data == null) {
+			throw "Compute shader data is null for shader id=" + shader.id;
+		}
+		
+		var computeSource:String = null;
+		try {
+			computeSource = shaderCompiler.run(shader.compute.data);
+		} catch(e:Dynamic) {
+			// Save error message to file
+			try {
+				var path = "/tmp/metal_compute_shader_error_" + shader.id + ".txt";
+				sys.io.File.saveContent(path, "Error compiling compute shader: " + Std.string(e));
+			} catch(e2:Dynamic) {}
+			throw "Compute shader generation failed for shader id=" + shader.id + ": " + Std.string(e);
+		}
+
+		// Save shader source for debugging
+		try {
+			var path = "/tmp/metal_compute_shader_" + shader.id + ".metal";
+			sys.io.File.saveContent(path, computeSource);
+		} catch(e:Dynamic) {}
+		
+		#if debug
+		compiled.vertex = new MetalShaderContext(null);
+		compiled.vertex.debugSource = computeSource;
+		#end
+		
+		// Compile compute shader (type 2 = compute)
+		var computeFunction = MetalNative.compile_shader(computeSource, 2);
+		if (computeFunction == null) {
+			throw "Compute shader compilation failed for shader id=" + shader.id;
+		}
+		
+		// Create compute pipeline state from the function
+		var computePipeline = MetalNative.create_compute_pipeline_from_function(computeFunction);
+		if (computePipeline == null) {
+			throw "Failed to create compute pipeline state for shader id=" + shader.id;
+		}
+
+		// Store pipeline in vertex slot (following RuntimeShader convention where compute aliases vertex)
+		compiled.vertex = new MetalShaderContext(computePipeline);
+		compiled.vertex.globalsSize = shader.compute.globalsSize;
+		compiled.vertex.paramsSize = shader.compute.paramsSize;
+		compiled.vertex.texturesCount = shader.compute.texturesCount;
+		
+		if (compiled.vertex.globalsSize > 0) {
+			compiled.vertex.globals = MetalNative.create_buffer(compiled.vertex.globalsSize << 4, 2);
+		}
+
+		if (compiled.vertex.paramsSize > 0) {
+			var singleDrawSize = compiled.vertex.paramsSize << 4;
+			var bufferSize = singleDrawSize * 256;
+			for (i in 0...MAX_FRAMES_IN_FLIGHT) {
+				var buffer = MetalNative.create_buffer(bufferSize, 2);
+				compiled.vertex.paramsBuffers.push(buffer);
+			}
+			compiled.vertex.params = compiled.vertex.paramsBuffers[0];
+			compiled.vertex.paramsContent = new hl.Bytes(singleDrawSize);
+		}
+
+		// Set up buffer types for compute shader
+		compiled.vertex.bufferCount = shader.compute.bufferCount;
+		if (shader.compute.bufferCount > 0) {
+			var bp = shader.compute.buffers;
+			while (bp != null) {
+				var kind = switch (bp.type) {
+					case TBuffer(_, _, k): k;
+					default: hxsl.Ast.BufferKind.Uniform;
+				};
+				compiled.vertex.bufferTypes.push(kind);
+				bp = bp.next;
+			}
+		}
+		
 		return compiled;
 	}
 
@@ -1560,6 +1650,19 @@ class MetalDriver extends Driver {
 				}
 
 			case Textures:
+				// For compute shaders, save textures to be bound during dispatch
+				if (currentRuntimeShader != null && currentRuntimeShader.mode == Compute) {
+					pendingComputeTextures = [];
+					if (buffers.vertex != null && buffers.vertex.tex != null) {
+						for (t in buffers.vertex.tex) {
+							if (t != null) {
+								pendingComputeTextures.push(t);
+							}
+						}
+					}
+					return;
+				}
+				
 				// Bind textures and samplers to fragment shader
 				texturesBound = false;
 				if (currentRenderEncoder != null && buffers.fragment != null && buffers.fragment.tex != null) {
@@ -1772,12 +1875,42 @@ class MetalDriver extends Driver {
 		if (currentCommandBuffer == null) {
 			throw "Cannot dispatch compute without an active command buffer";
 		}
+		
+		if (currentShader == null || currentShader.vertex == null) {
+			throw "No compute shader selected";
+		}
+		
+		if (currentRuntimeShader == null) {
+			throw "No runtime shader available";
+		}
 
 		// End current render encoder if active
 		var hadEncoder = currentRenderEncoder != null;
 		if (hadEncoder) {
 			MetalNative.end_encoding(currentRenderEncoder);
 			currentRenderEncoder = null;
+		}
+		
+		// Set compute pipeline from current shader
+		MetalNative.set_compute_pipeline(currentShader.vertex.shader);
+		
+		// Bind parameter buffer if available (contains shader params like textureSize)
+		if (currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsSize > 0) {
+			var currentBuffer = currentShader.vertex.paramsBuffers[currentFrameIndex];
+			if (currentBuffer != null) {
+				// Use offset for current draw call
+				var offset = drawCallIndex * (currentShader.vertex.paramsSize << 4);
+				MetalNative.set_compute_buffer(currentBuffer, 0);
+			}
+		}
+		
+		// Bind compute textures that were saved in uploadShaderBuffers
+		var texIndex = 0;
+		for (tex in pendingComputeTextures) {
+			if (tex != null && tex.t != null && tex.t.t != null) {
+				MetalNative.set_compute_texture(tex.t.t, texIndex);
+				texIndex++;
+			}
 		}
 
 		// Dispatch compute shader
@@ -1829,6 +1962,41 @@ class MetalDriver extends Driver {
 		if (buffer != null && buffer.vbuf != null) {
 			MetalNative.set_compute_buffer(buffer.vbuf, 0);
 		}
+	}
+	
+	// High-level compute shader API
+	public function selectComputeShader(shader:hxsl.RuntimeShader):Bool {
+		if (shader == null || shader.mode != Compute) return false;
+		
+		var id = shader.id;
+		var compiledShader = shaders.get(id);
+		
+		if (compiledShader == null) {
+			compiledShader = compileShader(shader);
+			if (compiledShader == null) return false;
+			shaders.set(id, compiledShader);
+		}
+		
+		currentComputeShader = compiledShader;
+		currentComputeRuntimeShader = shader;
+		return true;
+	}
+	
+	public function dispatchCompute(shader:hxsl.RuntimeShader, threadsX:Int, threadsY:Int, threadsZ:Int = 1) {
+		// Select and compile compute shader
+		if (!selectComputeShader(shader)) {
+			throw "Failed to select compute shader";
+		}
+		
+		// TODO: Bind shader parameters, globals, textures, buffers
+		// For now, just dispatch with thread counts
+		
+		// Calculate thread groups (assuming 8x8x1 from SetLayout)
+		var groupsX = Math.ceil(threadsX / 8.0);
+		var groupsY = Math.ceil(threadsY / 8.0);
+		var groupsZ = Math.ceil(threadsZ / 1.0);
+		
+		computeDispatch(Std.int(groupsX), Std.int(groupsY), Std.int(groupsZ), true);
 	}
 }
 
