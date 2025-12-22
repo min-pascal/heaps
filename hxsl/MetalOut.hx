@@ -78,6 +78,8 @@ class MetalOut {
     set(ComputeVar_LocalInvocationIndex, "thread_index_in_threadgroup");
     set(ComputeVar_WorkGroup, "int3(threadgroup_position_in_grid)");
     set(Mod, "fmod"); // Metal uses fmod() for float modulo
+    set(GroupMemoryBarrier, "threadgroup_barrier(mem_flags::mem_threadgroup)");
+    set(AtomicAdd, "atomic_fetch_add_explicit");
 
     for (g in gl)
       KWDS.set(g, true);

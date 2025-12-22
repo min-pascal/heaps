@@ -202,6 +202,8 @@ class Checker {
 				[];
 			case VertexID, InstanceID, FragCoord, FrontFacing:
 				null;
+			case GroupMemoryBarrier:
+				[];
 			case AtomicAdd:
 				[{ args : [{ name : "buf", type : TBuffer(TInt, SConst(0), RW) },{ name : "index", type : TInt }, { name : "data", type : TInt }], ret : TInt }];
 			case _ if( g.getName().indexOf("_") > 0 ):
@@ -1252,6 +1254,10 @@ class Checker {
 				error("Cannot apply " + g.toString() + " to these parameters", pos);
 			}
 		case Trace:
+			type = TVoid;
+		case GroupMemoryBarrier:
+			if( args.length != 0 )
+				error("GroupMemoryBarrier() takes no arguments", pos);
 			type = TVoid;
 		case ImageStore:
 			switch( ([for( a in args ) a.t]) ) {
