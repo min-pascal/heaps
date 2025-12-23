@@ -821,9 +821,15 @@ class MetalDriver extends Driver {
 	// Helper functions following established patterns
 	function getMetalBufferUsage(b:h3d.Buffer):Int {
 		var usage = 0;
-		if (b.flags.has(Dynamic)) usage |= 1;
+		if (b.flags.has(Dynamic)) usage |= 1;       // BUFFER_FLAG_DYNAMIC
 		if (b.flags.has(UniformBuffer)) usage |= 2;
 		if (b.flags.has(IndexBuffer)) usage |= 4;
+		// Support for GPU-driven rendering: compute write + vertex read
+		if (b.flags.has(ReadWriteBuffer)) usage |= 4; // BUFFER_FLAG_COMPUTE_WRITE
+		// Add vertex read flag for all non-index, non-uniform buffers
+		if (!b.flags.has(UniformBuffer) && !b.flags.has(IndexBuffer)) {
+			usage |= 2; // BUFFER_FLAG_VERTEX_READ
+		}
 		return usage;
 	}
 
