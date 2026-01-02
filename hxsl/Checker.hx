@@ -202,8 +202,6 @@ class Checker {
 				[];
 			case VertexID, InstanceID, FragCoord, FrontFacing:
 				null;
-			case GroupMemoryBarrier:
-				[];
 			case AtomicAdd:
 				[{ args : [{ name : "buf", type : TBuffer(TInt, SConst(0), RW) },{ name : "index", type : TInt }, { name : "data", type : TInt }], ret : TInt }];
 			case _ if( g.getName().indexOf("_") > 0 ):
