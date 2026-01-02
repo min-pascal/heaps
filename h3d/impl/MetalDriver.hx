@@ -110,7 +110,7 @@ private class MetalNative {
 	public static function begin_depth_render_pass(cmdBuffer:Dynamic, depthTexture:Dynamic, clearDepth:Float):Dynamic { return null; }
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
 	public static function set_depth_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool):Void {}
-	public static function set_stencil_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool, frontFunc:Int, frontSTfail:Int, frontDPfail:Int, frontPass:Int, backFunc:Int, backSTfail:Int, backDPfail:Int, backPass:Int, reference:Int, readMask:Int, writeMask:Int):Void {}
+	public static function set_stencil_state(encoder:Dynamic, depthCompareFunc:Int, depthWrite:Bool, frontFunc:Int, frontSTfail:Int, frontDPfail:Int, frontPass:Int, backFunc:Int, backSTfail:Int, backDPfail:Int, backPass:Int, reference:Int, readMask:Int, writeMask:Int):Void {}
 	public static function set_cull_mode(encoder:Dynamic, cullMode:Int):Void {}
 	public static function set_triangle_fill_mode(encoder:Dynamic, wireframe:Bool):Void {}
 	public static function set_vertex_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
@@ -1582,11 +1582,12 @@ class MetalDriver extends Driver {
 		
 		// Set depth testing state based on material pass settings
 		if (currentRenderEncoder != null) {
-			var depthTest = pass.depthTest != Always; // If not Always, we want depth testing
+			// Get depth comparison function index from pass (Compare enum)
+			var depthCompareFunc = Type.enumIndex(pass.depthTest);
 			var depthWrite = pass.depthWrite;
 			// Use pass stencil or default stencil
 			var s = pass.stencil != null ? pass.stencil : defStencil;
-			MetalNative.set_stencil_state(currentRenderEncoder, depthTest, depthWrite,
+			MetalNative.set_stencil_state(currentRenderEncoder, depthCompareFunc, depthWrite,
 				Type.enumIndex(s.frontTest), Type.enumIndex(s.frontSTfail),
 				Type.enumIndex(s.frontDPfail), Type.enumIndex(s.frontPass),
 				Type.enumIndex(s.backTest), Type.enumIndex(s.backSTfail),
