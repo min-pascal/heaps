@@ -230,6 +230,8 @@ class Checker {
 				[ { args : [ { name : "value", type : TInt } ], ret : vec4 } ];
 			case UnpackUnorm4x8:
 				[ { args : [ { name : "value", type : TInt } ], ret : vec4 } ];
+			case ResolveSampler:
+				[for( t in texDefs ) { args : [{ name : "handle", type : TTextureHandle }, { name : "tex", type : TSampler(t.dim,t.arr) }], ret : TVoid }];
 			default:
 				throw "Unsupported global "+g;
 			}
@@ -324,7 +326,7 @@ class Checker {
 		for( i in 0...tfuns.length )
 			typeFun(tfuns[i], funs[i].f.expr);
 
-		var localInits = [];
+		var localInits : Array<TExpr> = [];
 		for( i in inits.copy() ) {
 			if( i.v.kind == Local ) {
 				localInits.push({ e : TBinop(OpAssign,{ e : TVar(i.v), p : i.e.p, t : i.v.type },i.e), p : i.e.p, t : i.v.type });
@@ -609,7 +611,7 @@ class Checker {
 				case FField(ef):
 					makeCall(ef);
 				case FGlobal(g, arg, variants):
-					var eg = { e : TGlobal(g), t : TFun(variants), p : e1.p };
+					var eg : TExpr = { e : TGlobal(g), t : TFun(variants), p : e1.p };
 					if( variants.length == 0 ) {
 						var args = [for( a in args ) typeExpr(a, Value)];
 						args.unshift(arg);
@@ -637,7 +639,7 @@ class Checker {
 			type = e.t;
 			TParenthesis(e);
 		case EFunction(_):
-			throw "assert";
+			error("Local functions not supported", e.pos);
 		case EVars(vl):
 			if( with != InBlock )
 				error("Cannot declare a variable outside of a block", e.pos);
@@ -968,6 +970,7 @@ class Checker {
 					}
 				case Ignore, Doc(_):
 				case Flat: if( tv.kind != Local ) error("flat only allowed on local", pos);
+				case NoVar: if( tv.kind != Local ) error("noVar only allowed on local", pos);
 				case Depth:
 					// Depth qualifier marks depth/shadow textures for Metal compliance
 					switch( v.type ) {
@@ -1059,7 +1062,7 @@ class Checker {
 	}
 
 	function fieldAccess( e : TExpr, f : String, with : WithType, pos : Position ) : FieldAccess {
-		var ef = switch( e.t ) {
+		var ef : TExpr = switch( e.t ) {
 		case TStruct(vl):
 			var found = null;
 			for( v in vl )
@@ -1393,7 +1396,7 @@ class Checker {
 				case OpAdd: "add";
 				case OpSub: "subtract";
 				case OpDiv: "divide";
-				default: throw "assert";
+				default: ""+op;
 				}
 				error("Cannot " + opName + " " + e1.t.toString() + " and " + e2.t.toString(), pos);
 			}

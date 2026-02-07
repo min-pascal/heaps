@@ -85,6 +85,10 @@ enum Feature {
 		Supports instanced rendering
 	*/
 	InstancedRendering;
+	/*
+		Supports bindless
+	*/
+	Bindless;
 }
 
 enum QueryKind {
@@ -185,6 +189,9 @@ class Driver {
 	}
 
 	public function selectMaterial( pass : h3d.mat.Pass ) {
+	}
+
+	public function selectTextureHandles( handles : Array<h3d.mat.TextureHandle> ) {
 	}
 
 	public function uploadShaderBuffers( buffers : h3d.shader.Buffers, which : h3d.shader.Buffers.BufferKind ) {
@@ -324,4 +331,13 @@ class Driver {
 		throw "Compute shaders are not implemented on this platform";
 	}
 
+	// --- Bindless
+
+	public function enableBindless() {
+		throw "Bindless is not implemented on this platform";
+	}
+
+	public function getTextureHandle( t : h3d.mat.Texture ) : h3d.mat.TextureHandle {
+		throw "Bindless is not implemented on this platform";
+	}
 }

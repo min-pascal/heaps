@@ -29,7 +29,10 @@ class Flatten {
 	var textureFormats : Array<{ dim : TexDimension, arr : Bool, rw : Int, isDepth : Bool }>;
 	public var allocData : Map< TVar, Array<Alloc> >;
 
+	var mapExprFun : TExpr -> TExpr;
+
 	public function new() {
+		this.mapExprFun = mapExpr;
 	}
 
 	public function flatten( s : ShaderData, kind : FunctionKind ) : ShaderData {
@@ -74,7 +77,7 @@ class Flatten {
 		packBuffers("buffers", allVars, Uniform);
 		packBuffers("storagebuffers", allVars, Storage);
 		packBuffers("rwbuffers", allVars, RW);
-		var funs = [for( f in s.funs ) mapFun(f, mapExpr)];
+		var funs = [for( f in s.funs ) mapFun(f, mapExprFun)];
 		return {
 			name : s.name,
 			vars : outVars,
@@ -94,7 +97,7 @@ class Flatten {
 
 	static var SWIZ = [X,Y,Z,W];
 
-	function mkOp(e:TExpr,by:Int,f:Int->Int->Int,binop,pos) {
+	function mkOp(e:TExpr,by:Int,f:Int->Int->Int,binop,pos) : TExpr {
 		switch( e.e ) {
 		case TConst(CInt(i)):
 			return { e : TConst(CInt(f(i,by))), t : TInt, p : pos };
@@ -151,14 +154,14 @@ class Flatten {
 		case TArray( { e : TVar(v), p : vp }, eindex):
 			var a = varMap.get(v);
 			if( a == null || (!v.type.match(TBuffer(_)) && eindex.e.match(TConst(CInt(_)))) )
-				e.map(mapExpr);
+				e.map(mapExprFun);
 			else {
 				switch( v.type ) {
 				case TArray(t, _) if( t.isTexture() ):
 					eindex = toInt(mapExpr(eindex));
 					access(a, t, vp, AOffset(a,1,eindex));
 				case TBuffer(TInt|TFloat,_), TVec(_, VFloat|VInt):
-					e.map(mapExpr);
+					e.map(mapExprFun);
 				case TArray(t, _), TBuffer(t, _):
 					var stride = varSize4Bytes(t, a.t);
 					if( stride == 0 || (v.type.match(TArray(_)) && stride & 3 != 0) ) throw new Error("Dynamic access to an Array which size is not 4 components-aligned is not allowed", e.p);
@@ -240,12 +243,12 @@ class Flatten {
 			default : throw "assert";
 			}
 		default:
-			e.map(mapExpr);
+			e.map(mapExprFun);
 		};
 		return optimize(e);
 	}
 
-	inline function mkInt(v:Int,pos) {
+	inline function mkInt(v:Int,pos) : TExpr {
 		return { e : TConst(CInt(v)), t : TInt, p : pos };
 	}
 
@@ -327,26 +330,29 @@ class Flatten {
 			case TVec(size,VInt):
 				e.t = TVec(size,VFloat);
 				e = { e : TCall({ e : TGlobal([IVec2,IVec3,IVec4][size-2]), t : TFun([]), p : pos }, [e]), t : t, p : pos };
+			case TTextureHandle:
+				e.t = TVec(2, VFloat);
+				e = floatBitsToUint(e);
 			default:
 			}
 			return e;
 		}
 	}
 
-	function floatBitsToInt( e : TExpr ) {
+	function floatBitsToInt( e : TExpr ) : TExpr {
 		return { e : TCall({ e : TGlobal(FloatBitsToInt), t : TFun([]), p : e.p }, [e]), t : TInt, p : e.p };
 	}
 
-	function floatBitsToUint( e : TExpr ) {
+	function floatBitsToUint( e : TExpr ) : TExpr {
 		return { e : TCall({ e : TGlobal(FloatBitsToUint), t : TFun([]), p : e.p }, [e]), t : TInt, p : e.p };
 	}
 
-	function toInt( e : TExpr ) {
+	function toInt( e : TExpr ) : TExpr {
 		if( e.t == TInt ) return e;
 		return { e : TCall({ e : TGlobal(ToInt), t : TFun([]), p : e.p }, [e]), t : TInt, p : e.p };
 	}
 
-	function optimize( e : TExpr ) {
+	function optimize( e : TExpr ) : TExpr {
 		switch( e.e ) {
 		case TCall( { e : TGlobal(Mat3x4) }, [ { e : TCall( { e : TGlobal(Mat4) }, args) } ]):
 			var rem = 0;
@@ -372,7 +378,6 @@ class Flatten {
 	}
 
 	function packTextures( name : String, vars : Array<TVar>, t : Type ) {
-		
 		var alloc = new Array<Alloc>();
 		var g : TVar = {
 			id : Tools.allocVarId(),
@@ -383,7 +388,6 @@ class Flatten {
 		var pos = 0;
 		var samplers = [];
 		for( v in vars ) {
-			
 			var count = 1;
 			if( !v.type.equals(t) ) {
 				switch( v.type ) {
@@ -391,7 +395,7 @@ class Flatten {
 					// Channel matching depends on target type and channel's depth property
 					// ONLY do depth-aware routing if we're actually generating depth2d types
 					var doDepthRouting = t.match(TSamplerDepth(_,_));
-					
+
 					if (doDepthRouting) {
 						switch(t) {
 						case TSamplerDepth(T2D, false):
@@ -469,7 +473,6 @@ class Flatten {
 		if( alloc.length > 0 ) {
 			outVars.push(g);
 			allocData.set(g, alloc);
-		} else {
 		}
 		return alloc;
 	}
@@ -522,9 +525,10 @@ class Flatten {
 			type : TVec(0,t),
 			kind : kind,
 		};
-	// For Metal compatibility: align all parameters to vec4 (4-component) boundaries
-	// This ensures that vec3 parameters don't span multiple vec4 slots when accessed as float4*
-	var metalAlignedPacking = true;		for( v in vars ) {
+    // For Metal compatibility: align all parameters to vec4 (4-component) boundaries
+    // This ensures that vec3 parameters don't span multiple vec4 slots when accessed as float4*
+    var metalAlignedPacking = true;
+    for( v in vars ) {
 			if( v.type.isTexture() || v.type.match(TBuffer(_)) )
 				continue;
 			switch( v.type ) {
@@ -539,7 +543,7 @@ class Flatten {
 				varMap.set(v, a);
 				continue;
 			}
-			
+
 			// Metal-aligned packing: ensure each parameter starts at a vec4 boundary
 			if( metalAlignedPacking ) {
 				// Align apos to next vec4 boundary (multiple of 4)
@@ -549,14 +553,14 @@ class Flatten {
 					apos += alignPad;
 					alloc.push(a);
 				}
-				
+
 				// Allocate at aligned position
 				var a = new Alloc(g, t, apos, size);
 				a.v = v;
 				varMap.set(v, a);
 				alloc.push(a);
 				apos += size;
-				
+
 				// Pad to complete the vec4 if needed
 				var pad = (4 - (size % 4)) % 4;
 				if( pad > 0 ) {
@@ -566,7 +570,7 @@ class Flatten {
 				}
 				continue;
 			}
-			
+
 			// Original packing logic (non-Metal, kept for compatibility)
 			var best : Alloc = null;
 			for( a in alloc )
@@ -617,6 +621,7 @@ class Flatten {
 			for( v in vl )
 				size += varSize(v.type, t);
 			size;
+		case TTextureHandle: 2;
 		default:
 			throw v.toString() + " size unknown for type " + t;
 		}
@@ -670,7 +675,7 @@ class Flatten {
 			}
 			if( v.qualifiers != null ) {
 			}
-			
+
 			// Check if this is a shadow/depth channel by @depth qualifier or variable name
 			var isDepthChannel = false;
 			if (v.qualifiers != null) {
@@ -687,16 +692,16 @@ class Flatten {
 			// This handles cases where qualifier is lost during linking
 			if (!isDepthChannel) {
 				var n = fullPath.toLowerCase();  // Use full path, not just name
-				isDepthChannel = n.indexOf("shadow") >= 0 || 
+				isDepthChannel = n.indexOf("shadow") >= 0 ||
 				                 n.indexOf("depth") >= 0;
 			}
-			
+
 			// Phase 2: Enable depth2d generation with proper sampling code
 			// depth2d textures require .sample_compare() or .read() instead of .sample()
 			// Currently only supported for Metal backend
 			var useDepth2d = #if (!hlsdl && !js) true #else false #end;
 			if (!useDepth2d) isDepthChannel = false;
-			
+
 			addTextureFormat(T2D, false, 0, isDepthChannel);
 		case TArray(type, _):
 			switch ( type ) {

@@ -375,13 +375,25 @@ class Pass {
 		};
 	}
 
+	#if !macro
 	public function clone() {
 		var p = new Pass(name, shaders.clone());
-		p.selfShaders = selfShaders;
-		p.bits = bits;
-		p.enableLights = enableLights;
+		if ( selfShaders != null ) {
+			var sl = selfShaders;
+			var prev = null;
+			while ( sl != null && sl != shaders)  {
+				prev = sl;
+				sl = sl.next;
+			}
+			prev.next = null;
+			p.selfShaders = selfShaders.clone();
+			prev.next = sl;
+		}
+		p.loadBits(bits);
+		p.loadFlags(flags);
 		if (stencil != null) p.stencil = stencil.clone();
 		return p;
 	}
+	#end
 
 }

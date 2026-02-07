@@ -864,7 +864,6 @@ class BitmapComp extends DrawableComp implements domkit.Component.ComponentDecl<
 @:uiComp("text") @:domkitDecl
 class TextComp extends DrawableComp implements domkit.Component.ComponentDecl<h2d.Text> {
 
-	@:p var text : String = "";
 	@:p(font) var font : h2d.Font;
 	@:p var letterSpacing = 0;
 	@:p var lineSpacing = 0;
@@ -977,7 +976,7 @@ class FlowComp extends ObjectComp implements domkit.Component.ComponentDecl<h2d.
 	@:p var backgroundAlpha : Float = 1;
 	@:p(auto) var backgroundSmooth : Null<Bool>;
 	@:p var backgroundRepeat : Bool;
-	@:p var debug : Bool;
+	@:p var debug : Null<Bool>;
 	@:p var layout : h2d.Flow.FlowLayout;
 	@:p var vertical : Bool;
 	@:p var horizontal : Bool;

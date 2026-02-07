@@ -94,7 +94,8 @@ class RenderContext extends h3d.impl.RenderContext {
 	}
 
 	public function setupTarget() {
-		cameraProjFlip = engine.driver.hasFeature(BottomLeftCoords) && engine.getCurrentTarget() != null ? -1 : 1;
+		var v = engine.driver.hasFeature(BottomLeftCoords) && engine.getCurrentTarget() != null ? -1 : 1;
+		if( cameraProjFlip != v ) cameraProjFlip = v;
 	}
 
 	function getCurrentPixelSize() {
@@ -253,6 +254,10 @@ class RenderContext extends h3d.impl.RenderContext {
 
 	public function getDepthClearValue() {
 		return useReverseDepth ? 0 : 1;
+	}
+
+	public function selectTextureHandles(handles : Array<h3d.mat.TextureHandle>) {
+		engine.driver.selectTextureHandles(handles);
 	}
 
 	public function uploadParams() {

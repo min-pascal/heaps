@@ -40,10 +40,13 @@ class Texture {
 	@:bits(bits) public var filter : Filter;
 	@:bits(bits) public var wrap : Wrap;
 	public var layerCount(get, never) : Int;
-	@:bits(bits, 4) public var startingMip : Int = 0;
+	@:bits(bits, 4) var __startingMip : Int;
 	@:bits(bits, 16) var packedLodBias : Int;
+	@:bits(bits, 4) var packedAnisotropicMaxLevel : Int = 15;
 	public var lodBias(get, set) : Float;
 	public var mipLevels(get, never) : Int;
+	public var anisotropicMaxLevel(get, set) : Int;
+	public var startingMip(get,set) : Int;
 	var customMipLevels : Int;
 
 	/**
@@ -66,6 +69,15 @@ class Texture {
 			_lastFrame = lf;
 		}
 		return _lastFrame;
+	}
+
+	inline function get_startingMip() {
+		return __startingMip;
+	}
+
+	inline function set_startingMip(v:Int) {
+		if( flags.has(Loading) ) flags.set(AsyncKeepStartingMip);
+		return __startingMip = v;
 	}
 
 	inline function get_lastFrame()
@@ -98,6 +110,15 @@ class Texture {
 		var iPart = hxd.Math.floor(v);
 		var fPart = v % 1.0;
 		packedLodBias = iPart << (16 - 4) | hxd.Math.floor(fPart * (1 << (16 - 4)));
+		return v;
+	}
+
+	function get_anisotropicMaxLevel() : Int {
+		return packedAnisotropicMaxLevel + 1;
+	}
+
+	function set_anisotropicMaxLevel(v:Int) {
+		packedAnisotropicMaxLevel = hxd.Math.iclamp(v - 1, 0, 15);
 		return v;
 	}
 
@@ -263,7 +284,7 @@ class Texture {
 		}
 	}
 
-	public function clear( color : Int, alpha = 1., ?layer = -1 ) {
+	public function clear( color : Int, alpha = 1., layer = -1 ) {
 		alloc();
 		if( width == 0 || height == 0 ) return;
 		if( #if (usegl || hlsdl || js) true #else flags.has(Target) #end && (width != 1 || height != 1) ) {
@@ -349,16 +370,20 @@ class Texture {
 
 	public function hasStencil() {
 		return switch( format ) {
-		case Depth24Stencil8: true;
+		case Depth24Stencil8, Depth32Stencil8: true;
 		default: false;
 		}
 	}
 
 	public function isDepth() {
 		return switch( format ) {
-		case Depth16, Depth24, Depth24Stencil8, Depth32: true;
+		case Depth16, Depth24, Depth24Stencil8, Depth32, Depth32Stencil8: true;
 		default: false;
 		}
+	}
+
+	public function getHandle() : h3d.mat.TextureHandle {
+		return mem.driver.getTextureHandle(this);
 	}
 
 	/**

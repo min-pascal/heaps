@@ -915,7 +915,7 @@ class DirectXDriver extends h3d.impl.Driver {
 
 	override function hasFeature(f:Feature) {
 		return switch(f) {
-		case Queries, BottomLeftCoords:
+		case Queries, BottomLeftCoords, Bindless:
 			false;
 		default:
 			true;
@@ -1346,7 +1346,7 @@ class DirectXDriver extends h3d.impl.Driver {
 				}
 
 				var sidx = shader.samplersMap[i];
-				var samplerBits = @:privateAccess t.bits & ~h3d.mat.Texture.startingMip_mask;
+				var samplerBits = @:privateAccess t.bits & ~h3d.mat.Texture.__startingMip_mask;
 				if( sidx < maxSamplers && samplerBits != state.samplerBits[sidx] ) {
 					var ss = samplerStates.get(samplerBits);
 					if( ss == null ) {
@@ -1358,6 +1358,7 @@ class DirectXDriver extends h3d.impl.Driver {
 						desc.minLod = 0;
 						desc.maxLod = 1e30;
 						desc.mipLodBias = t.lodBias;
+						desc.maxAnisotropy = t.anisotropicMaxLevel;
 						ss = Driver.createSamplerState(desc);
 						samplerStates.set(samplerBits, ss);
 					}
@@ -1515,10 +1516,10 @@ class DirectXDriver extends h3d.impl.Driver {
 	];
 
 	static var FILTER : Array<Array<Filter>> = [
-		[MinMagMipPoint,MinMagMipLinear],
-		[MinMagMipPoint,MinMagLinearMipPoint],
-		[MinMagPointMipLinear, MinMagMipLinear],
-		// Anisotropic , Comparison, Minimum, Maximum
+		[MinMagMipPoint,MinMagMipLinear,Anisotropic,Anisotropic],
+		[MinMagMipPoint,MinMagLinearMipPoint,Anisotropic,Anisotropic],
+		[MinMagPointMipLinear, MinMagMipLinear,Anisotropic,Anisotropic],
+		// Comparison, Minimum, Maximum
 	];
 
 	static var WRAP : Array<AddressMode> = [

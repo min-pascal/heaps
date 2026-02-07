@@ -212,12 +212,17 @@ class GlslOut {
 			throw "assert";
 		case TChannel(n):
 			add("channel" + n);
+		case TTextureHandle:
+			throw "assert";
 		}
 	}
 
 	function addVar( v : TVar ) {
 		switch( v.type ) {
 		case TArray(t, size):
+			#if heaps_compact_mem
+			var v = v.clone();
+			#end
 			var old = v.type;
 			v.type = t;
 			addVar(v);
@@ -240,6 +245,9 @@ class GlslOut {
 			}
 			add((isVertex ? "vertex_" : "") + "uniform_buffer"+(uniformBuffer++));
 			add(" { ");
+			#if heaps_compact_mem
+			var v = v.clone();
+			#end
 			v.type = TArray(t,size);
 			addVar(v);
 			v.type = TBuffer(t,size,kind);
@@ -264,7 +272,7 @@ class GlslOut {
 			var el2 = el.copy();
 			var last = el2[el2.length - 1];
 			el2[el2.length - 1] = { e : TReturn(last), t : e.t, p : last.p };
-			var e2 = {
+			var e2 : TExpr = {
 				t : TVoid,
 				e : TBlock(el2),
 				p : e.p,

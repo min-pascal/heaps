@@ -280,24 +280,46 @@ class HMDModel extends MeshPrimitive {
 	}
 
 	override function getCollider() {
-		if( collider != null )
+		if (collider != null)
 			return collider;
-		if ( colliderData == null ) {
+		if (colliderData == null) {
 			var poly = new h3d.col.PolygonBuffer();
 			poly.source = {
 				entry : lib.resource.entry,
 				geometryName : null,
 			};
-			for( h in lib.header.models )
+
+			for (h in lib.header.models) {
 				if( lib.header.geometries[h.geometry] == data ) {
 					poly.source.geometryName = h.name;
 					break;
 				}
-			var sphere = data.bounds.toSphere();
+			}
+
+			// If the model is a skin, we should apply on it's collider the default transform of the root joint
+			// since the def mat of the model has been removed and set in the root joint
+			var b = data.bounds;
 			var buf = lib.getBuffers(data, hxd.BufferFormat.POS3D);
+			if (this.model.skin != null) {
+				var defMat = this.model.skin.joints[0].position.toMatrix();
+				b.transform(defMat);
+
+				var tmpVec = new h3d.Vector();
+				var idx = 0;
+				while (idx < buf.vertexes.length) {
+					tmpVec.set(buf.vertexes.get(idx), buf.vertexes.get(idx + 1), buf.vertexes.get(idx + 2));
+					tmpVec.transform(defMat);
+					buf.vertexes.set(idx, tmpVec.x);
+					buf.vertexes.set(idx + 1, tmpVec.y);
+					buf.vertexes.set(idx + 2, tmpVec.z);
+					idx += 3;
+				}
+			}
+
 			poly.setData(buf.vertexes, buf.indexes);
-			if( collider == null )
-				collider = new h3d.col.Collider.OptimizedCollider(sphere, poly);
+
+			if (collider == null)
+				collider = new h3d.col.Collider.OptimizedCollider(b.toSphere(), poly);
 		} else {
 			collider = colliderData.getCollider();
 		}

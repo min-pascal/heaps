@@ -130,6 +130,7 @@ class MacroParser {
 			case "Channel2": return TChannel(2);
 			case "Channel3": return TChannel(3);
 			case "Channel4": return TChannel(4);
+			case "TextureHandle": return TTextureHandle;
 			case _ if( StringTools.startsWith(name,"Sampler") ):
 				// Check if it's a depth sampler (ends with "Shadow")
 				if( StringTools.endsWith(name, "Shadow") ) {

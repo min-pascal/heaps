@@ -746,7 +746,12 @@ class GlDriver extends Driver {
 					gl.texParameteri(mode, GL.TEXTURE_BASE_LEVEL, startingMip);
 					#if !js
 					gl.texParameterf(mode, GL.TEXTURE_LOD_BIAS, t.lodBias);
+					var hasAnisotropicFiltering = true;
 					#end
+					if( hasAnisotropicFiltering ) {
+						var anisotropicLevel = t.filter.match(AnisotropicLinear|AnisotropicNearest) ? t.anisotropicMaxLevel : 1;
+						gl.texParameterf(mode, 0x84fe /* GL_TEXTURE_MAX_ANISOTROPY_EXT */, anisotropicLevel);
+					}
 				}
 			}
 		}
@@ -1955,16 +1960,22 @@ class GlDriver extends Driver {
 	}
 
 	override function hasFeature( f : Feature ) : Bool {
-		#if js
-		return features.get(f);
-		#else
-		return true;
-		#end
+		return switch(f) {
+		case Bindless:
+			false;
+		default:
+			#if js
+			features.get(f);
+			#else
+			true;
+			#end
+		};
 	}
 
 	#if js
 	var features : Map<Feature,Bool> = new Map();
 	var has16Bits : Bool;
+	var hasAnisotropicFiltering : Bool;
 	function makeFeatures() {
 		for( f in Type.allEnums(Feature) )
 			features.set(f,checkFeature(f));
@@ -1976,6 +1987,7 @@ class GlDriver extends Driver {
 		if( glES < 3 )
 			gl.getExtension("WEBGL_depth_texture");
 		has16Bits = gl.getExtension("EXT_texture_norm16") != null; // 16 bit textures
+		hasAnisotropicFiltering = gl.getExtension("EXT_texture_filter_anisotropic") != null;
 	}
 	function checkFeature( f : Feature ) {
 		return switch( f ) {
@@ -2125,9 +2137,9 @@ class GlDriver extends Driver {
 	#end
 
 	static var TFILTERS = [
-		[[GL.NEAREST,GL.NEAREST],[GL.LINEAR,GL.LINEAR]],
-		[[GL.NEAREST,GL.NEAREST_MIPMAP_NEAREST],[GL.LINEAR,GL.LINEAR_MIPMAP_NEAREST]],
-		[[GL.NEAREST,GL.NEAREST_MIPMAP_LINEAR],[GL.LINEAR,GL.LINEAR_MIPMAP_LINEAR]],
+		[[GL.NEAREST,GL.NEAREST],[GL.LINEAR,GL.LINEAR],[GL.NEAREST,GL.NEAREST],[GL.LINEAR,GL.LINEAR]],
+		[[GL.NEAREST,GL.NEAREST_MIPMAP_NEAREST],[GL.LINEAR,GL.LINEAR_MIPMAP_NEAREST],[GL.NEAREST,GL.NEAREST_MIPMAP_NEAREST],[GL.LINEAR,GL.LINEAR_MIPMAP_NEAREST]],
+		[[GL.NEAREST,GL.NEAREST_MIPMAP_LINEAR],[GL.LINEAR,GL.LINEAR_MIPMAP_LINEAR],[GL.NEAREST,GL.NEAREST_MIPMAP_LINEAR],[GL.LINEAR,GL.LINEAR_MIPMAP_LINEAR]],
 	];
 
 	static var TWRAP = [
