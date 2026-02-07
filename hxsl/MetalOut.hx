@@ -305,6 +305,8 @@ class MetalOut {
         throw "assert";
       case TChannel(n):
         add("channel" + n);
+      case TTextureHandle:
+        add("uint2");
     }
   }
 
