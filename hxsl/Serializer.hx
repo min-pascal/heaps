@@ -176,11 +176,11 @@ class Serializer {
 		case 17:
 			TChannel(input.readByte());
 		case 18:
-			TTextureHandle;
-		case 19:
 			var b = input.readByte();
 			var dim = TDIMS[b>>1];
 			TSamplerDepth(dim, b & 1 != 0);
+		case 19:
+			TTextureHandle;
 		default:
 			throw "assert";
 		}
