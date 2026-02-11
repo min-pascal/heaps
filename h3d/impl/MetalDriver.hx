@@ -106,7 +106,7 @@ private class MetalNative {
 	public static function begin_render_pass(cmdBuffer:Dynamic, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
 	public static function resume_render_pass(cmdBuffer:Dynamic):Dynamic { return null; }
 	public static function begin_mrt_render_pass(cmdBuffer:Dynamic, textures:hl.NativeArray<Dynamic>, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
-	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int, depthTexture:Dynamic, layer:Int, mipLevel:Int):Dynamic { return null; }
+	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int, depthTexture:Dynamic, layer:Int, mipLevel:Int, depthAction:Int):Dynamic { return null; }
 	public static function begin_depth_render_pass(cmdBuffer:Dynamic, depthTexture:Dynamic, clearDepth:Float):Dynamic { return null; }
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
 	public static function set_depth_state(encoder:Dynamic, depthTest:Bool, depthWrite:Bool):Void {}
@@ -399,7 +399,8 @@ class MetalDriver extends Driver {
 					metalTexture,
 					clearColor.r, clearColor.g, clearColor.b, clearColor.a,
 					metalDepthTexture,
-					0, 0  // layer, mipLevel - use stored values if needed
+					0, 0,  // layer, mipLevel - use stored values if needed
+					depth != null ? 1 : 0  // depthAction: 1=Clear depth if requested, 0=Load (preserve) otherwise
 				);
 				
 				// Mark texture as cleared so subsequent setRenderTarget calls don't clear it again
@@ -1403,7 +1404,8 @@ class MetalDriver extends Driver {
 						metalTexture,
 						clearColor.r, clearColor.g, clearColor.b, clearColor.a,
 						metalDepthTexture,
-						layer, mipLevel
+						layer, mipLevel,
+						1  // depthAction: 1=Clear depth on first use
 					);
 					tex.flags.set(WasCleared);
 				} else {
@@ -1413,7 +1415,8 @@ class MetalDriver extends Driver {
 						metalTexture,
 						0, 0, 0, -1,  // Negative alpha = Load existing content
 						metalDepthTexture,
-						layer, mipLevel
+						layer, mipLevel,
+						0  // depthAction: 0=Load (preserve depth from previous pass)
 					);
 				}
 			}
@@ -1478,7 +1481,8 @@ class MetalDriver extends Driver {
 					metalTexture,
 					0, 0, 0, 255,  // Not used for depth textures, but clear on first use
 					null,
-					0, 0  // layer, mipLevel
+					0, 0,  // layer, mipLevel
+					1  // depthAction: 1=Clear
 				);
 				tex.flags.set(WasCleared);
 			} else {
@@ -1488,7 +1492,8 @@ class MetalDriver extends Driver {
 					metalTexture,
 					0, 0, 0, -1,  // Negative alpha signals MTLLoadActionLoad
 					null,
-					0, 0  // layer, mipLevel
+					0, 0,  // layer, mipLevel
+					0  // depthAction: 0=Load
 				);
 			}
 
