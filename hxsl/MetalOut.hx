@@ -104,6 +104,10 @@ class MetalOut {
   var outputCount:Int;
   var outputVars:Array<TVar>;
 
+  // Bindless texturing support
+  var bindlessSamplers:Map<Int, Int>;
+  var bindlessSamplersCount:Int;
+
   public var varNames:Map<Int, String>;
 
   public function new() {
@@ -550,6 +554,28 @@ class MetalOut {
               writeExpr(args[1]); // UV coordinates as uint2
               add("))");
             }
+          case TGlobal(ResolveSampler):
+            // Bindless texturing: resolve texture and sampler from bindless arrays
+            // args[0] = handle (uint2), args[1] = texture variable
+            if (args.length >= 2) {
+              switch (args[1].e) {
+                case TVar(v):
+                  // Reassign texture from bindless array
+                  ident(v);
+                  add(" = bindlessTextures[");
+                  writeExpr(args[0]);
+                  add(".x];\n");
+                  // Create local sampler variable
+                  add("\t");
+                  bindlessSamplers.set(v.id, bindlessSamplersCount++);
+                default:
+                  // Fallback
+                  writeExpr(args[1]);
+                  add(" = bindlessTextures[");
+                  writeExpr(args[0]);
+                  add(".x]");
+              }
+            }
           case TGlobal(Texture | TextureLod):
             // Metal texture sampling: texture.sample(sampler, coords) or depth2d.read(coords)
             // HXSL: texture(tex, coords) or textureLod(tex, coords, lod)
@@ -607,14 +633,29 @@ class MetalOut {
                 // Regular texture sampling
                 writeExpr(args[0]); // This outputs the texture
                 add(".sample(");
+
                 add("fragmentSamplers[");
+                // Check if this is a bindless-resolved texture
+                var usedBindlessSampler = false;
                 switch (args[0].e) {
-                  case TArray(_, { e: TConst(CInt(idx)) }):
-                    add(Std.string(idx));
+                  case TVar(v):
+                    var bsIdx = bindlessSamplers.get(v.id);
+                    if (bsIdx != null) {
+                      add("0");
+                      usedBindlessSampler = true;
+                    }
                   default:
-                    add("0"); // Fallback to sampler 0
                 }
-                add("], ");
+                if (!usedBindlessSampler) {
+                  switch (args[0].e) {
+                    case TArray(_, { e: TConst(CInt(idx)) }):
+                      add(Std.string(idx));
+                    default:
+                      add("0");
+                  }
+                }
+                add("]");
+                add(", ");
 
                 if (isTextureArray) {
                   // For texture2d_array: sample(sampler, float2 coords, uint array_index)
@@ -751,6 +792,33 @@ class MetalOut {
                 writeExpr(a);
               }
               add(" }");
+            }
+          case TGlobal(FloatBitsToUint):
+            // Metal: as_type<uint>(float) or as_type<uint2>(float2) etc.
+            if (args.length == 1) {
+              var targetType = switch (args[0].t) {
+                case TTextureHandle: "uint2";
+                case TVec(2, _): "uint2";
+                case TVec(3, _): "uint3";
+                case TVec(4, _): "uint4";
+                default: "uint";
+              };
+              add("as_type<" + targetType + ">(");
+              writeExpr(args[0]);
+              add(")");
+            }
+          case TGlobal(FloatBitsToInt):
+            // Metal: as_type<int>(float) or as_type<int2>(float2) etc.
+            if (args.length == 1) {
+              var targetType = switch (args[0].t) {
+                case TVec(2, _): "int2";
+                case TVec(3, _): "int3";
+                case TVec(4, _): "int4";
+                default: "int";
+              };
+              add("as_type<" + targetType + ">(");
+              writeExpr(args[0]);
+              add(")");
             }
           default:
             // Standard function call
@@ -1094,6 +1162,10 @@ class MetalOut {
     exprValues = [];
     computeLayout = [1, 1, 1];
 
+    // Reset bindless state
+    bindlessSamplers = new Map();
+    bindlessSamplersCount = 0;
+
     // Reset shader type flags
     isVertex = false;
     isFragment = false;
@@ -1399,9 +1471,27 @@ class MetalOut {
         }
       }
 
-      // Second pass: add samplers (one per texture)
-      if (textureIndex > 0) {
-        add(", array<sampler, " + textureIndex + "> fragmentSamplers [[sampler(0)]]");
+      // Check if shader uses bindless texturing (TTextureHandle type)
+      var shaderHasBindless = false;
+      for (v in s.vars) {
+        switch (v.type) {
+          case TTextureHandle:
+            shaderHasBindless = true;
+            break;
+          default:
+        }
+      }
+
+      // Second pass: add samplers
+      var samplerCount = textureIndex;
+      if (shaderHasBindless && samplerCount < 1) samplerCount = 1; // Need at least 1 sampler for bindless
+      if (samplerCount > 0) {
+        add(", array<sampler, " + samplerCount + "> fragmentSamplers [[sampler(0)]]");
+      }
+
+      // Add bindless texture array
+      if (shaderHasBindless) {
+        add(", array<texture2d<float>, 96> bindlessTextures [[texture(16)]]");
       }
 
       // Third pass: add non-texture buffers

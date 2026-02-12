@@ -95,6 +95,7 @@ private class MetalNative {
 	public static function create_sampler_state(minFilter:Int, magFilter:Int, mipFilter:Int, wrapS:Int, wrapT:Int):Dynamic { return null; }
 	public static function dispose_sampler(sampler:Dynamic):Void {}
 	public static function set_fragment_samplers(encoder:Dynamic, samplers:hl.NativeArray.NativeArray<Dynamic>):Void {}
+	public static function set_fragment_sampler(encoder:Dynamic, sampler:Dynamic, index:Int):Void {}
 
 	// Shader compilation
 	public static function compile_shader(source:String, shaderType:Int):Dynamic { return null; }
@@ -195,6 +196,15 @@ class MetalDriver extends Driver {
 	var currentFrameIndex : Int = 0;
 	var drawCallIndex : Int = 0;  // Track draw calls within current frame for buffer offsets
 	var defStencil : h3d.mat.Stencil;
+
+	// Bindless texturing support
+	var bindlessEnabled : Bool = false;
+	var textureHandles : Map<Int, Map<Int, h3d.mat.TextureHandle>> = [];
+	var nextBindlessTextureSlot : Int = 0;
+	var nextBindlessSamplerSlot : Int = 0;
+	static inline var BINDLESS_TEXTURE_START = 16;
+	static inline var BINDLESS_SAMPLER_START = 16;
+	static inline var MAX_BINDLESS_SLOTS = 96;
 
 
 	public function new() {
@@ -1793,8 +1803,78 @@ class MetalDriver extends Driver {
 			case BottomLeftCoords: false; // Metal uses top-left
 			case InstancedRendering: true;
 			case Wireframe: true;
+			case Bindless: bindlessEnabled;
 			default: false;
 		};
+	}
+
+	override function enableBindless() {
+		if (bindlessEnabled) return;
+		bindlessEnabled = true;
+	}
+
+	override function getTextureHandle(t:h3d.mat.Texture):h3d.mat.TextureHandle {
+		if (t.t == null && t.realloc != null) {
+			t.alloc();
+			t.realloc();
+		}
+		var texId = @:privateAccess t.id;
+		var handles = textureHandles.get(texId);
+		if (handles == null) {
+			handles = [];
+			textureHandles.set(texId, handles);
+		}
+		var handle = handles.get(t.bits);
+		if (handle == null) {
+			var texSlot = nextBindlessTextureSlot++;
+			var samplerSlot = nextBindlessSamplerSlot++;
+			if (texSlot >= MAX_BINDLESS_SLOTS || samplerSlot >= MAX_BINDLESS_SLOTS)
+				throw "Too many bindless textures (max " + MAX_BINDLESS_SLOTS + ")";
+			handle = @:privateAccess new h3d.mat.TextureHandle(t, haxe.Int64.make(samplerSlot, texSlot));
+			handles.set(t.bits, handle);
+		}
+		return handle;
+	}
+
+	override function selectTextureHandles(handles:Array<h3d.mat.TextureHandle>) {
+		if (currentRenderEncoder == null) return;
+		for (h in handles) {
+			if (h == null) continue;
+			var t = @:privateAccess h.texture;
+			var hval = @:privateAccess h.handle;
+			if (hval == haxe.Int64.ofInt(-1))
+				throw "Handle is invalid";
+			if (t != null && t.t == null && t.realloc != null) {
+				t.alloc();
+				t.realloc();
+			}
+			if (t != null && t.t != null) {
+				t.lastFrame = frame;
+				var metalTexture:Dynamic = t.t.t;
+				var texSlot = hval.low;
+				var samplerSlot = hval.high;
+				// Bind texture at bindless slot
+				MetalNative.set_fragment_texture(currentRenderEncoder, metalTexture, BINDLESS_TEXTURE_START + texSlot);
+				// Create and bind sampler at bindless slot
+				var mip = Type.enumIndex(t.mipMap);
+				var filter = Type.enumIndex(t.filter);
+				var wrap = Type.enumIndex(t.wrap);
+				var bits = mip | (filter << 3) | (wrap << 6);
+				var samplerState = samplerStates.get(bits);
+				if (samplerState == null) {
+					var minFilter = (filter == 0) ? 0 : 1;
+					var magFilter = (filter == 0) ? 0 : 1;
+					var mipFilter = mip;
+					var wrapS = (wrap == 1) ? 1 : 0;
+					var wrapT = wrapS;
+					samplerState = MetalNative.create_sampler_state(minFilter, magFilter, mipFilter, wrapS, wrapT);
+					if (samplerState != null)
+						samplerStates.set(bits, samplerState);
+				}
+				if (samplerState != null)
+					MetalNative.set_fragment_sampler(currentRenderEncoder, samplerState, BINDLESS_SAMPLER_START + samplerSlot);
+			}
+		}
 	}
 
 	override function isSupportedFormat(fmt:h3d.mat.Data.TextureFormat):Bool {
