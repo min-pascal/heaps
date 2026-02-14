@@ -105,6 +105,7 @@ class System {
 		var width = 800;
 		var height = 600;
 		var size = haxe.macro.Compiler.getDefine("windowSize");
+		var pos = haxe.macro.Compiler.getDefine("windowPosition");
 		var title = haxe.macro.Compiler.getDefine("windowTitle");
 		var fixed = haxe.macro.Compiler.getDefine("windowFixed") == "1";
 		if( title == null )
@@ -114,14 +115,21 @@ class System {
 			width = Std.parseInt(p[0]);
 			height = Std.parseInt(p[1]);
 		}
+		var winX : Null<Int> = null;
+		var winY : Null<Int> = null;
+		if( pos != null ) {
+			var p = pos.split(",");
+			winX = Std.parseInt(p[0]);
+			winY = Std.parseInt(p[1]);
+		}
 		timeoutTick();
 		#if hlsdl
 			sdl.Sdl.init();
 			@:privateAccess Window.initChars();
-			@:privateAccess Window.inst = new Window(title, width, height, fixed);
+			@:privateAccess Window.inst = new Window(title, width, height, fixed, winX, winY);
 			init();
 		#elseif hldx
-			@:privateAccess Window.inst = new Window(title, width, height, fixed);
+			@:privateAccess Window.inst = new Window(title, width, height, fixed, winX, winY);
 			init();
 		#else
 			@:privateAccess Window.inst = new Window(title, width, height);

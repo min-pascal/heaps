@@ -100,7 +100,7 @@ class Window {
 	#end
 	#end
 
-	function new(title:String, width:Int, height:Int, fixed:Bool = false) {
+	function new(title:String, width:Int, height:Int, fixed:Bool = false, ?winX:Int, ?winY:Int) {
 		this.windowWidth = width;
 		this.windowHeight = height;
 		eventTargets = new List();
@@ -111,12 +111,16 @@ class Window {
 		#if heaps_vulkan
 		if( USE_VULKAN ) sdlFlags |= sdl.Window.SDL_WINDOW_VULKAN;
 		#end
-		window = new sdl.Window(title, width, height, sdl.Window.SDL_WINDOWPOS_CENTERED, sdl.Window.SDL_WINDOWPOS_CENTERED, sdlFlags);
+		var posX = if (winX != null) winX else sdl.Window.SDL_WINDOWPOS_CENTERED;
+		var posY = if (winY != null) winY else sdl.Window.SDL_WINDOWPOS_CENTERED;
+		window = new sdl.Window(title, width, height, posX, posY, sdlFlags);
 		this.windowWidth = window.width;
 		this.windowHeight = window.height;
 		#elseif hldx
 		final dxFlags = if (!fixed) dx.Window.RESIZABLE else 0;
-		window = new dx.Window(title, width, height, dx.Window.CW_USEDEFAULT, dx.Window.CW_USEDEFAULT, dxFlags);
+		var posX = if (winX != null) winX else dx.Window.CW_USEDEFAULT;
+		var posY = if (winY != null) winY else dx.Window.CW_USEDEFAULT;
+		window = new dx.Window(title, width, height, posX, posY, dxFlags);
 		#end
 		WINDOWS.push(this);
 		#if multidriver
