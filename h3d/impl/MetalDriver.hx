@@ -106,7 +106,7 @@ private class MetalNative {
 	// Render command encoder
 	public static function begin_render_pass(cmdBuffer:Dynamic, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
 	public static function resume_render_pass(cmdBuffer:Dynamic):Dynamic { return null; }
-	public static function begin_mrt_render_pass(cmdBuffer:Dynamic, textures:hl.NativeArray<Dynamic>, r:Int, g:Int, b:Int, a:Int):Dynamic { return null; }
+	public static function begin_mrt_render_pass(cmdBuffer:Dynamic, textures:hl.NativeArray<Dynamic>, r:Int, g:Int, b:Int, a:Int, depthTexture:Dynamic):Dynamic { return null; }
 	public static function begin_texture_render_pass(cmdBuffer:Dynamic, texture:Dynamic, r:Int, g:Int, b:Int, a:Int, depthTexture:Dynamic, layer:Int, mipLevel:Int, depthAction:Int):Dynamic { return null; }
 	public static function begin_depth_render_pass(cmdBuffer:Dynamic, depthTexture:Dynamic, clearDepth:Float):Dynamic { return null; }
 	public static function set_render_pipeline_state(encoder:Dynamic, pipeline:Dynamic):Void {}
@@ -394,9 +394,11 @@ class MetalDriver extends Driver {
 						metalTextures[i] = tex.t.t;
 					}
 				}
+				var metalDepthTex:Dynamic = (currentTargets[0] != null && currentTargets[0].depthBuffer != null) ? currentTargets[0].depthBuffer.t.t : null;
 				currentRenderEncoder = MetalNative.begin_mrt_render_pass(
 					currentCommandBuffer, metalTextures,
-					clearColor.r, clearColor.g, clearColor.b, clearColor.a
+					clearColor.r, clearColor.g, clearColor.b, clearColor.a,
+					metalDepthTex
 				);
 			} else {
 				// Single target - recreate with begin_texture_render_pass
@@ -1558,7 +1560,9 @@ class MetalDriver extends Driver {
 		if (currentCommandBuffer == null) {
 			currentCommandBuffer = MetalNative.create_command_buffer();
 		}
-		currentRenderEncoder = MetalNative.begin_mrt_render_pass(currentCommandBuffer, metalTextures, clearR, clearG, clearB, clearA);
+		// Get depth buffer from first texture (like OpenGL's setRenderTargets which calls setRenderTarget(textures[0]))
+		var metalDepthTexture:Dynamic = (textures[0] != null && textures[0].depthBuffer != null) ? textures[0].depthBuffer.t.t : null;
+		currentRenderEncoder = MetalNative.begin_mrt_render_pass(currentCommandBuffer, metalTextures, clearR, clearG, clearB, clearA, metalDepthTexture);
 		
 		if (currentRenderEncoder != null && textures[0] != null) {
 			// Set viewport based on first target
