@@ -134,6 +134,12 @@ class App implements h3d.IDrawable {
 	}
 
 	function setup() {
+		try {
+			var p = new sys.io.Process("uname", ["-m"]);
+			var arch = p.stdout.readLine();
+			p.close();
+			Sys.println('[Heaps] Architecture: $arch');
+		} catch(_:Dynamic) {}
 		var initDone = false;
 		engine.onReady = staticHandler;
 		engine.onContextLost = onContextLost;
