@@ -352,7 +352,12 @@ class MetalDriver extends Driver {
 			if (renderedToBackbuffer) {
 				MetalNative.commit_command_buffer(currentCommandBuffer);
 			} else {
+				// Commit without presenting (e.g. drawTo() outside render cycle).
+				// wait_until_completed both ensures GPU work is done (so subsequent
+				// capturePixels reads valid data) and releases the command buffer
+				// via __bridge_transfer to prevent a memory leak.
 				MetalNative.commit_without_present(currentCommandBuffer);
+				MetalNative.wait_until_completed(currentCommandBuffer);
 			}
 			currentCommandBuffer = null;
 		}
