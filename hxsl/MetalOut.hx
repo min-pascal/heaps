@@ -221,6 +221,8 @@ class MetalOut {
     return false;
   }
 
+  // === SHARED UTILITIES ===
+
   function varName(v:TVar) {
     var n = varNames.get(v.id);
     if (n != null)
@@ -1126,7 +1128,7 @@ class MetalOut {
         }
         add("})");
       case TMeta(_, _, e):
-        // Metadata expressions - just output the inner expression like GLSL does
+        // Metadata expressions - just output the inner expression
         writeExpr(e);
       case TIf(econd, eif, eelse):
         // Ternary expression: (cond) ? eif : eelse
@@ -1201,6 +1203,7 @@ class MetalOut {
     add("}\n\n");
 
     // Generate proper input/output structures
+    // === VERTEX SHADER GENERATION ===
     if (isVertex) {
       // Vertex input structure with proper attribute indices
       add("struct VertexIn {\n");
@@ -1370,6 +1373,7 @@ class MetalOut {
       add("}\n");
 
     }
+    // === FRAGMENT SHADER GENERATION ===
     else if (isFragment) {
       // Count fragment outputs for MRT support
       outputCount = 0;
@@ -1608,6 +1612,7 @@ class MetalOut {
       add("}\n");
 
     }
+    // === COMPUTE SHADER GENERATION ===
     else if (isCompute) {
       add("kernel void compute_main(");
       
