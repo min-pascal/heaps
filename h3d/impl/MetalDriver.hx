@@ -140,6 +140,28 @@ private class MetalNative {
 
 class MetalDriver extends Driver {
 
+	// Render pass tracing (temporary debug)
+	static var _tEnabled : Bool = false;
+	static var _tFrame : Int = 0;
+	static var _tSkip : Int = 30;
+	static var _tBuf : StringBuf = null;
+
+	static function _t(msg:String) {
+		if (!_tEnabled) return;
+		if (_tSkip > 0) return;
+		_tBuf.add("[F" + _tFrame + "] " + msg + "\n");
+	}
+
+	static function _tEnd() {
+		if (!_tEnabled) return;
+		if (_tSkip > 0) { _tSkip--; return; }
+		_tFrame++;
+		if (_tFrame >= 5) {
+			_tEnabled = false;
+			try { sys.io.File.saveContent("/tmp/metal_trace.log", _tBuf.toString()); } catch(e:Dynamic) {}
+		}
+	}
+
 	var device : Dynamic; // id<MTLDevice>
 	var commandQueue : Dynamic; // id<MTLCommandQueue>
 	var window : sdl.Window;
@@ -153,6 +175,8 @@ class MetalDriver extends Driver {
 	var currentCommandBuffer : Dynamic;
 	var currentRenderEncoder : Dynamic;
 	var currentTargets : Array<h3d.mat.Texture> = [];
+	var currentTargetLayer : Int = 0;  // Current cube face / array slice for render target
+	var currentTargetMipLevel : Int = 0;  // Current mip level for render target
 	var frame : Int;
 	var renderedToBackbuffer : Bool = false;  // Track if we got a drawable for backbuffer
 	var backbufferRenderPassCreated : Bool = false;  // Track if begin_render_pass was called this frame
@@ -285,8 +309,9 @@ class MetalDriver extends Driver {
 
 	override function begin(frame:Int) {
 		this.frame = frame;
-		texturesBound = false; // Reset texture binding flag for new frame
-		
+		texturesBound = false;
+		if (_tBuf == null && _tEnabled) { _tBuf = new StringBuf(); }
+		_t("BEGIN frame=" + frame);
 		// Reset flags for new frame
 		renderedToBackbuffer = false;
 		backbufferRenderPassCreated = false;
@@ -345,6 +370,8 @@ class MetalDriver extends Driver {
 	}
 
 	override function end() {
+		_t("END rtbb=" + renderedToBackbuffer + " enc=" + (currentRenderEncoder != null) + " cmd=" + (currentCommandBuffer != null));
+		_tEnd();
 		if (currentRenderEncoder != null) {
 			MetalNative.end_encoding(currentRenderEncoder);
 			currentRenderEncoder = null;
@@ -370,6 +397,7 @@ class MetalDriver extends Driver {
 	}
 
 	override function clear(?color:h3d.Vector4, ?depth:Float, ?stencil:Int) {
+		_t("CLEAR c=" + (color != null) + " d=" + depth + " s=" + stencil + " tgt=" + currentTargets.length + " layer=" + currentTargetLayer);
 		// Store clear color for use in render pass
 		if (color != null) {
 			clearColor.r = Std.int(color.r * 255);
@@ -419,7 +447,7 @@ class MetalDriver extends Driver {
 					metalTexture,
 					clearColor.r, clearColor.g, clearColor.b, clearColor.a,
 					metalDepthTexture,
-					0, 0,  // layer, mipLevel - use stored values if needed
+					currentTargetLayer, currentTargetMipLevel,
 					depth != null ? 1 : 0  // depthAction: 1=Clear depth if requested, 0=Load (preserve) otherwise
 				);
 				
@@ -675,8 +703,8 @@ class MetalDriver extends Driver {
 			if (compiled.vertex.paramsSize > 0) {
 				// paramsSize is in vec4 units, each vec4 = 16 bytes, so multiply by 16 (shift left 4)
 				var singleDrawSize = compiled.vertex.paramsSize << 4;
-				// Allocate space for 256 draw calls per frame (should be enough for most scenes)
-				var bufferSize = singleDrawSize * 256;
+				// Allocate space for 1024 draw calls per frame (enough for complex multi-light scenes)
+				var bufferSize = singleDrawSize * 1024;
 				// Create 3 buffers for triple buffering
 				for (i in 0...MAX_FRAMES_IN_FLIGHT) {
 					var buffer = MetalNative.create_buffer(bufferSize, 2);
@@ -731,8 +759,8 @@ class MetalDriver extends Driver {
 			if (compiled.fragment.paramsSize > 0) {
 				// paramsSize is in vec4 units, each vec4 = 16 bytes, so multiply by 16 (shift left 4)
 				var singleDrawSize = compiled.fragment.paramsSize << 4;
-				// Allocate space for 256 draw calls per frame (should be enough for most scenes)
-				var bufferSize = singleDrawSize * 256;
+				// Allocate space for 1024 draw calls per frame (enough for complex multi-light scenes)
+				var bufferSize = singleDrawSize * 1024;
 				// Create 3 buffers for triple buffering
 				for (i in 0...MAX_FRAMES_IN_FLIGHT) {
 					var buffer = MetalNative.create_buffer(bufferSize, 2);
@@ -963,14 +991,20 @@ class MetalDriver extends Driver {
 			: 1; // 1 = BGRA8Unorm for backbuffer
 		
 		// Check if we have a depth buffer attached to current render target
-		var hasDepth = (currentTargets.length > 0 && currentTargets[0] != null && currentTargets[0].depthBuffer != null);
+		// Use depth format to differentiate pipelines: different depth formats need separate pipelines
+		var depthFormat = 0; // 0 = no depth
+		if (currentTargets.length > 0 && currentTargets[0] != null && currentTargets[0].depthBuffer != null) {
+			depthFormat = getMetalTextureFormat(currentTargets[0].depthBuffer.format);
+		} else if (currentTargets.length == 0) {
+			depthFormat = 9; // Backbuffer uses Depth32Float_Stencil8 (mapped from Depth24Stencil8)
+		}
 		
 		// MRT count (1-8 render targets)
 		var mrtCount = currentTargets.length > 0 ? currentTargets.length : 1;
 		
 		// Create cache key as string to avoid integer overflow/collision issues
-		// Format: "stride_format_depth_mrt_blendSrc_blendDst_blendAlphaSrc_blendAlphaDst"
-		var cacheKeyStr = bufferStride + "_" + targetFormat + "_" + (hasDepth ? 1 : 0) + "_" + mrtCount + "_" + 
+		// Format: "stride_format_depthFmt_mrt_blendSrc_blendDst_blendAlphaSrc_blendAlphaDst"
+		var cacheKeyStr = bufferStride + "_" + targetFormat + "_" + depthFormat + "_" + mrtCount + "_" + 
 		                  blendSrc + "_" + blendDst + "_" + blendAlphaSrc + "_" + blendAlphaDst;
 		
 		// Check if we have a cached pipeline for this configuration
@@ -1154,7 +1188,9 @@ class MetalDriver extends Driver {
 	}
 
 	override function draw(ibuf:h3d.Buffer, startIndex:Int, ntriangles:Int) {
+		_t("DRAW t=" + ntriangles + " tgt=" + (currentTargets.length == 0 ? "BB" : currentTargets.length + "t") + " enc=" + (currentRenderEncoder != null) + " bl=" + currentBlendSrc + "/" + currentBlendDst + " sh=" + (currentShader != null ? currentShader.id : -1));
 		if (currentRenderEncoder == null || currentShader == null || currentBuffer == null || currentRuntimeShader == null) {
+			_t("  SKIP: enc=" + (currentRenderEncoder != null) + " sh=" + (currentShader != null) + " buf=" + (currentBuffer != null) + " rs=" + (currentRuntimeShader != null));
 			return;
 		}
 
@@ -1336,6 +1372,8 @@ class MetalDriver extends Driver {
 	}
 
 	override function setRenderTarget(tex:Null<h3d.mat.Texture>, layer = 0, mipLevel = 0, depthBinding:h3d.Engine.DepthBinding = ReadWrite) {
+		var n = tex == null ? "BB" : (tex.name != null ? tex.name : tex.width + "x" + tex.height);
+		_t("SRT: " + n + " L=" + layer + " dep=" + depthBinding + " bbC=" + backbufferRenderPassCreated + " rBB=" + renderedToBackbuffer);
 		// If we're switching FROM backbuffer TO texture, unset the flag
 		// (it will be set again later if we actually draw to backbuffer)
 		var wasBackbuffer = (currentTargets.length == 0);
@@ -1351,6 +1389,8 @@ class MetalDriver extends Driver {
 
 		// Store current render target
 		currentTargets = tex != null ? [tex] : [];
+		currentTargetLayer = layer;
+		currentTargetMipLevel = mipLevel;
 		
 		// Update lastFrame like OpenGL driver does
 		if (tex != null) {
@@ -1546,6 +1586,7 @@ class MetalDriver extends Driver {
 	}
 
 	override function setRenderTargets(textures:Array<h3d.mat.Texture>, depthBinding:h3d.Engine.DepthBinding = ReadWrite) {
+		_t("SRTs: count=" + textures.length + " dep=" + depthBinding);
 		if (textures.length == 0) {
 			setRenderTarget(null, 0, 0, depthBinding);
 			return;
