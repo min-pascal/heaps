@@ -1437,9 +1437,10 @@ class HMDOut extends BaseLibrary {
 				continue;
 			}
 
-			for( idx => mc in mcs ) {
-				var params = mc == null && mc.useDefault ? generateCollides : mc;
-				var colliderType = hxd.fmt.hmd.Data.Collider.resolveColliderType(d, model, mc, collisionThresholdHeight, collisionUseLowLod);
+			for ( idx => mc in mcs ) {
+				var isDefaultParams = mc != null && mc.useDefault;
+				var params = isDefaultParams ? generateCollides : mc;
+				var colliderType = hxd.fmt.hmd.Data.Collider.resolveColliderType(d, model, params, isDefaultParams, collisionThresholdHeight, collisionUseLowLod);
 				var collider : Collider = switch (colliderType) {
 					case Empty:
 						new EmptyCollider();
@@ -1544,10 +1545,14 @@ class HMDOut extends BaseLibrary {
 	function makePosition( m : h3d.Matrix ) {
 		var p = new Position();
 		var s = m.getScale();
+		var angles = m.getEulerAngles();
+		var r = h3d.Matrix.R(angles.x, angles.y, angles.z);
 		var q = new h3d.Quat();
-		q.initRotateMatrix(m);
-		q.normalize();
-		if( q.w < 0 ) q.negate();
+		q.initRotateMatrix(r);
+		if (Math.isNaN(q.x)) q.x = 0;
+		if (Math.isNaN(q.y)) q.y = 0;
+		if (Math.isNaN(q.z)) q.z = 0;
+		if (q.w < 0) q.negate();
 		p.sx = round(s.x);
 		p.sy = round(s.y);
 		p.sz = round(s.z);

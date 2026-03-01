@@ -252,8 +252,8 @@ class RenderContext extends h3d.impl.RenderContext {
 		return cameraFrustumBuffer;
 	}
 
-	public function getDepthClearValue() {
-		return useReverseDepth ? 0 : 1;
+	public function getDepthClearValue() : Float {
+		return useReverseDepth ? 0.0 : 1.0;
 	}
 
 	public function selectTextureHandles(handles : Array<h3d.mat.TextureHandle>) {
@@ -301,8 +301,10 @@ class RenderContext extends h3d.impl.RenderContext {
 
 	override public function dispose() {
 		super.dispose();
-		if ( cameraFrustumBuffer != null )
+		if ( cameraFrustumBuffer != null ) {
 			hxd.impl.Allocator.get().disposeBuffer( cameraFrustumBuffer );
+			cameraFrustumBuffer = null;
+		}
 	}
 
 }

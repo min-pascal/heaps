@@ -139,7 +139,7 @@ class BufferAllocator {
 		for ( p in pages )
 			p.reset();
 
-		var i = 0;
+		var i = 1;
 		while ( i < pages.length ) {
 			var page = pages[i];
 			if ( page.unusedFrame > MAX_KEEP_FRAME ) {
@@ -1225,7 +1225,7 @@ class DX12Driver extends h3d.impl.Driver {
 		return null;
 	}
 
-	static final SHADER_ARGS : Array<String>= [/*"-Zi", "-Qembed_debug"*/];
+	static final SHADER_ARGS : Array<String>= [#if dx12_shader_debug "-Zi", "-Qembed_debug" #end];
 	function compileSource( sh : hxsl.RuntimeShader.RuntimeShaderData, profile, rootStr = "" ) {
 		var out = new hxsl.HlslOut();
 		if( sh.code == null ) {
@@ -1786,7 +1786,7 @@ class DX12Driver extends h3d.impl.Driver {
 
 		var totalSize = vertexCount*stride;
 
-		var tmpBuf = allocGPU(totalSize, READBACK, COMMON);
+		var tmpBuf = allocGPU(totalSize, READBACK, COPY_DEST);
 
 		transition(b.vbuf, COPY_SOURCE);
 		flushTransitions();
@@ -2682,6 +2682,20 @@ class DX12Driver extends h3d.impl.Driver {
 			frame.commandList.setPipelineState(cache.pipeline);
 			currentPipelineState = cache.pipeline;
 		}
+	}
+
+	// MARKING
+
+	override function beginEvent( name : String ) {
+		#if heaps_debug_events
+		frame.commandList.pixBeginEvent(0, @:privateAccess name.bytes);
+		#end
+	}
+
+	override function endEvent() {
+		#if heaps_debug_events
+		frame.commandList.pixEndEvent();
+		#end
 	}
 
 	// QUERIES
