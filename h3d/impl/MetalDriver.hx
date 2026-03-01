@@ -306,8 +306,6 @@ class MetalDriver extends Driver {
 		// Only create render encoder for backbuffer if we created a new command buffer
 		// If reusing existing buffer (e.g., from setRenderTarget), skip this
 		if (creatingNewCommandBuffer && currentCommandBuffer != null) {
-			renderedToBackbuffer = true;  // Mark that we're rendering to backbuffer
-			backbufferRenderPassCreated = true;
 			var clearColor = {r: 26, g: 26, b: 26, a: 255}; // Default dark background
 			try {
 				var engine = h3d.Engine.getCurrent();
@@ -331,8 +329,13 @@ class MetalDriver extends Driver {
 				clearColor.a
 			);
 
-			// Initialize viewport to full screen
+			// Only mark backbuffer pass as created if begin_render_pass actually succeeded
+			// (it can fail if nextDrawable returns nil during early init)
 			if (currentRenderEncoder != null) {
+				backbufferRenderPassCreated = true;
+				renderedToBackbuffer = true;
+
+				// Initialize viewport to full screen
 				var engine = h3d.Engine.getCurrent();
 				if (engine != null) {
 					MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast engine.width, cast engine.height);
@@ -498,6 +501,7 @@ class MetalDriver extends Driver {
 		// Match OpenGL behavior: unset WasCleared flag on allocation
 		// This ensures the texture will be cleared on first use as a render target
 		t.flags.unset(WasCleared);
+		t.lastFrame = frame;
 
 		return {
 			t: cast metalTexture, // Return the native texture handle directly
@@ -1383,10 +1387,18 @@ class MetalDriver extends Driver {
 				if (backbufferRenderPassCreated) {
 					// We already have a drawable from begin_render_pass - resume it
 					currentRenderEncoder = MetalNative.resume_render_pass(currentCommandBuffer);
+					// If resume failed (drawable lost), fall back to begin_render_pass
+					if (currentRenderEncoder == null) {
+						currentRenderEncoder = MetalNative.begin_render_pass(
+							currentCommandBuffer,
+							clearColor.r,
+							clearColor.g,
+							clearColor.b,
+							clearColor.a
+						);
+					}
 				} else {
 					// First render pass to backbuffer this frame - clear it
-					backbufferRenderPassCreated = true;
-					renderedToBackbuffer = true;
 					currentRenderEncoder = MetalNative.begin_render_pass(
 						currentCommandBuffer,
 						clearColor.r,
@@ -1394,6 +1406,15 @@ class MetalDriver extends Driver {
 						clearColor.b,
 						clearColor.a
 					);
+					// Only mark as rendered when creating a NEW backbuffer pass
+					// (not when resuming — resume doesn't mean we drew anything)
+					if (currentRenderEncoder != null) {
+						renderedToBackbuffer = true;
+					}
+				}
+				// Mark pass as created so future calls use resume instead of clear
+				if (currentRenderEncoder != null) {
+					backbufferRenderPassCreated = true;
 				}
 		} else {
 			// Check if this is depth-only rendering
@@ -1705,7 +1726,23 @@ class MetalDriver extends Driver {
 						
 						for (i in 0...texCount) {
 							var t = buffers.fragment.tex[i];
+
+							// Handle null/disposed textures with defaults (matching GL driver)
+							if (t == null || t.isDisposed()) {
+								var color = h3d.mat.Defaults.loadingTextureColor;
+								t = h3d.mat.Texture.fromColor(color, (color >>> 24) / 255);
+							}
+
+							// Handle textures that need reallocation (auto-disposed then needed again)
+							if (t != null && t.t == null && t.realloc != null) {
+								t.alloc();
+								t.realloc();
+							}
+
 							if (t != null && t.t != null) {
+								// Keep texture alive by updating lastFrame (prevents auto-dispose)
+								t.lastFrame = frame;
+
 								// Bind texture
 								var metalTexture:Dynamic = t.t.t;
 								MetalNative.set_fragment_texture(currentRenderEncoder, metalTexture, i);
