@@ -115,7 +115,7 @@ class System {
 			winX = Std.parseInt(p[0]);
 			winY = Std.parseInt(p[1]);
 		}
-		return new Window(title, width, height, { fixed: fixed });
+		return new Window(title, width, height, { fixed: fixed }, winX, winY);
 	}
 
 	public static function start( init : Void -> Void ) : Void {
