@@ -115,6 +115,8 @@ private class MetalNative {
 	public static function set_cull_mode(encoder:Dynamic, cullMode:Int):Void {}
 	public static function set_triangle_fill_mode(encoder:Dynamic, wireframe:Bool):Void {}
 	public static function set_vertex_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
+	public static function set_vertex_bytes(encoder:Dynamic, data:hl.Bytes, length:Int, index:Int):Void {}
+	public static function set_fragment_bytes(encoder:Dynamic, data:hl.Bytes, length:Int, index:Int):Void {}
 	public static function set_fragment_texture(encoder:Dynamic, texture:Dynamic, index:Int):Void {}
 	public static function set_fragment_buffer(encoder:Dynamic, buffer:Dynamic, offset:Int, index:Int):Void {}
 	public static function draw_primitives(encoder:Dynamic, primitiveType:Int, vertexStart:Int, vertexCount:Int):Void {}
@@ -219,6 +221,11 @@ class MetalDriver extends Driver {
 	static inline var MAX_FRAMES_IN_FLIGHT = 3;
 	var currentFrameIndex : Int = 0;
 	var drawCallIndex : Int = 0;  // Track draw calls within current frame for buffer offsets
+	// Cached globals data for per-draw upload (ensures each draw call gets its own buffer slot)
+	var cachedVertexGlobalsData : hl.Bytes;
+	var cachedVertexGlobalsBytes : Int = 0;
+	var cachedFragmentGlobalsData : hl.Bytes;
+	var cachedFragmentGlobalsBytes : Int = 0;
 	var defStencil : h3d.mat.Stencil;
 
 	// Bindless texturing support
@@ -697,7 +704,7 @@ class MetalDriver extends Driver {
 			compiled.vertex.paramsSize = shader.vertex.paramsSize;
 			compiled.vertex.texturesCount = shader.vertex.texturesCount;
 			if (compiled.vertex.globalsSize > 0) {
-        compiled.vertex.globals = MetalNative.create_buffer(compiled.vertex.globalsSize << 4, 2);
+        compiled.vertex.globals = MetalNative.create_buffer((compiled.vertex.globalsSize << 4) * 1024, 2);
       }
 
 			if (compiled.vertex.paramsSize > 0) {
@@ -755,7 +762,7 @@ class MetalDriver extends Driver {
 			compiled.fragment.globalsSize = shader.fragment.globalsSize;
 			compiled.fragment.paramsSize = shader.fragment.paramsSize;
 			compiled.fragment.texturesCount = shader.fragment.texturesCount;
-			if (compiled.fragment.globalsSize > 0) compiled.fragment.globals = MetalNative.create_buffer(compiled.fragment.globalsSize << 4, 2);
+			compiled.fragment.globals = MetalNative.create_buffer((compiled.fragment.globalsSize << 4) * 1024, 2);
 			if (compiled.fragment.paramsSize > 0) {
 				// paramsSize is in vec4 units, each vec4 = 16 bytes, so multiply by 16 (shift left 4)
 				var singleDrawSize = compiled.fragment.paramsSize << 4;
@@ -837,7 +844,7 @@ class MetalDriver extends Driver {
 		compiled.vertex.texturesCount = shader.compute.texturesCount;
 		
 		if (compiled.vertex.globalsSize > 0) {
-			compiled.vertex.globals = MetalNative.create_buffer(compiled.vertex.globalsSize << 4, 2);
+			compiled.vertex.globals = MetalNative.create_buffer((compiled.vertex.globalsSize << 4) * 1024, 2);
 		}
 
 		if (compiled.vertex.paramsSize > 0) {
@@ -1217,7 +1224,9 @@ class MetalDriver extends Driver {
 		var vertexBufferIndex = currentShader.hasPerInstanceInputs ? 2 : 1;
 		if (currentShader.vertex != null) {
 			if (currentShader.vertex.globals != null) {
-				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, 0, vertexBufferIndex);
+				var vgOffset = drawCallIndex * (currentShader.vertex.globalsSize << 4);
+				if (cachedVertexGlobalsData != null) MetalNative.upload_buffer_data(currentShader.vertex.globals, cachedVertexGlobalsData, cachedVertexGlobalsBytes, vgOffset);
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, vgOffset, vertexBufferIndex);
 				vertexBufferIndex++;
 			}
 			if (currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsBuffers.length > 0) {
@@ -1233,7 +1242,9 @@ class MetalDriver extends Driver {
 		if (currentShader.fragment != null) {
 			var fragmentBufferIndex = 0;  // Fragment buffers can start at 0
 			if (currentShader.fragment.globals != null) {
-				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.globals, 0, fragmentBufferIndex);
+				var fgOffset = drawCallIndex * (currentShader.fragment.globalsSize << 4);
+				if (cachedFragmentGlobalsData != null) MetalNative.upload_buffer_data(currentShader.fragment.globals, cachedFragmentGlobalsData, cachedFragmentGlobalsBytes, fgOffset);
+				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.globals, fgOffset, fragmentBufferIndex);
 				fragmentBufferIndex++;
 			}
 			if (currentShader.fragment.paramsBuffers != null && currentShader.fragment.paramsBuffers.length > 0) {
@@ -1312,7 +1323,9 @@ class MetalDriver extends Driver {
 		var vertexBufferIndex = currentShader.hasPerInstanceInputs ? 2 : 1;
 		if (currentShader.vertex != null) {
 			if (currentShader.vertex.globals != null) {
-				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, 0, vertexBufferIndex);
+				var vgOffset = drawCallIndex * (currentShader.vertex.globalsSize << 4);
+				if (cachedVertexGlobalsData != null) MetalNative.upload_buffer_data(currentShader.vertex.globals, cachedVertexGlobalsData, cachedVertexGlobalsBytes, vgOffset);
+				MetalNative.set_vertex_buffer(currentRenderEncoder, currentShader.vertex.globals, vgOffset, vertexBufferIndex);
 				vertexBufferIndex++;
 			}
 			if (currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsBuffers.length > 0) {
@@ -1327,7 +1340,9 @@ class MetalDriver extends Driver {
 		if (currentShader.fragment != null) {
 			var fragmentBufferIndex = 0;
 			if (currentShader.fragment.globals != null) {
-				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.globals, 0, fragmentBufferIndex);
+				var fgOffset = drawCallIndex * (currentShader.fragment.globalsSize << 4);
+				if (cachedFragmentGlobalsData != null) MetalNative.upload_buffer_data(currentShader.fragment.globals, cachedFragmentGlobalsData, cachedFragmentGlobalsBytes, fgOffset);
+				MetalNative.set_fragment_buffer(currentRenderEncoder, currentShader.fragment.globals, fgOffset, fragmentBufferIndex);
 				fragmentBufferIndex++;
 			}
 			if (currentShader.fragment.paramsBuffers != null && currentShader.fragment.paramsBuffers.length > 0) {
@@ -1704,22 +1719,15 @@ class MetalDriver extends Driver {
 
 		switch (which) {
 			case Globals:
-				// Upload global uniforms to vertex and fragment shaders
-				if (currentShader.vertex != null && currentShader.vertex.globals != null && currentShader.vertex.globalsSize > 0) {
-					var data = hl.Bytes.getArray(buffers.vertex.globals.toData());
-					if (data != null) {
-						var bytes = currentShader.vertex.globalsSize << 4;  // Size in vec4s, convert to bytes (16 bytes per vec4)
-						MetalNative.upload_buffer_data(currentShader.vertex.globals, data, bytes, 0);
-					}
+				// Cache globals data; actual upload happens in draw() at drawCallIndex offset
+				if (currentShader.vertex != null && currentShader.vertex.globalsSize > 0) {
+					cachedVertexGlobalsData = hl.Bytes.getArray(buffers.vertex.globals.toData());
+					cachedVertexGlobalsBytes = currentShader.vertex.globalsSize << 4;
 				}
-				if (currentShader.fragment != null && currentShader.fragment.globals != null && currentShader.fragment.globalsSize > 0) {
-					var data = hl.Bytes.getArray(buffers.fragment.globals.toData());
-					if (data != null) {
-						var bytes = currentShader.fragment.globalsSize << 4;
-						MetalNative.upload_buffer_data(currentShader.fragment.globals, data, bytes, 0);
-					}
+				if (currentShader.fragment != null && currentShader.fragment.globalsSize > 0) {
+					cachedFragmentGlobalsData = hl.Bytes.getArray(buffers.fragment.globals.toData());
+					cachedFragmentGlobalsBytes = currentShader.fragment.globalsSize << 4;
 				}
-
 			case Params:
 				// Upload shader parameters to vertex and fragment shaders using triple buffering with per-draw-call offsets
 				if (currentShader.vertex != null && currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsSize > 0) {
