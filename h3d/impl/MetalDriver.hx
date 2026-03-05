@@ -29,7 +29,6 @@ private class MetalShaderContext {
 	public var bufferCount : Int;
 	public var paramsContent : hl.Bytes;
 	public var globals : Dynamic; // id<MTLBuffer>
-	public var params : Dynamic; // id<MTLBuffer> (deprecated, use paramsBuffers instead)
 	public var paramsBuffers : Array<Dynamic>; // Array of id<MTLBuffer> for triple buffering
 	public var texturesTypes : Array<hxsl.Ast.Type>;
 	public var bufferTypes : Array<hxsl.Ast.BufferKind>; // Types of each buffer (Uniform, Storage, RW)
@@ -49,18 +48,15 @@ private class CompiledMetalShader {
 	public var vertex : MetalShaderContext;
 	public var fragment : MetalShaderContext;
 	public var format : hxd.BufferFormat;
-	public var pipelineState : Dynamic; // id<MTLRenderPipelineState> - DEPRECATED, use pipelineCache
 	public var vertexDescriptor : Dynamic; // MTLVertexDescriptor
 	public var pipelineKey : String;
 	public var hasPerInstanceInputs : Bool; // Track if shader has per-instance inputs
 	
 	// Cache of pipeline states per buffer format stride
-	public var pipelineCache : Map<Int, Dynamic>; // stride -> pipelineState (legacy)
-	public var pipelineCacheStr : Map<String, Dynamic>; // full config string -> pipelineState
+	public var pipelineCache : Map<String, Dynamic>; // full config string -> pipelineState
 
 	public function new() {
 		pipelineCache = new Map();
-		pipelineCacheStr = new Map();
 		hasPerInstanceInputs = false;
 	}
 }
@@ -142,28 +138,6 @@ private class MetalNative {
 
 class MetalDriver extends Driver {
 
-	// Render pass tracing (temporary debug)
-	static var _tEnabled : Bool = false;
-	static var _tFrame : Int = 0;
-	static var _tSkip : Int = 30;
-	static var _tBuf : StringBuf = null;
-
-	static function _t(msg:String) {
-		if (!_tEnabled) return;
-		if (_tSkip > 0) return;
-		_tBuf.add("[F" + _tFrame + "] " + msg + "\n");
-	}
-
-	static function _tEnd() {
-		if (!_tEnabled) return;
-		if (_tSkip > 0) { _tSkip--; return; }
-		_tFrame++;
-		if (_tFrame >= 5) {
-			_tEnabled = false;
-			try { sys.io.File.saveContent("/tmp/metal_trace.log", _tBuf.toString()); } catch(e:Dynamic) {}
-		}
-	}
-
 	var device : Dynamic; // id<MTLDevice>
 	var commandQueue : Dynamic; // id<MTLCommandQueue>
 	var window : sdl.Window;
@@ -196,9 +170,6 @@ class MetalDriver extends Driver {
 	
 	// Sampler state cache (similar to DirectX driver)
 	var samplerStates : Map<Int, Dynamic>;  // bits -> MTLSamplerState
-
-	// Optional: Apple Metal samples integration (can be null if not needed)
-	var metalSamples : MetalSamples = null;
 
 	// Dummy white texture for shaders that expect a texture but don't use one
 	var dummyWhiteTexture : Dynamic = null;
@@ -290,16 +261,11 @@ class MetalDriver extends Driver {
 		if (initialized) {
 			// Dispose all shaders
 			for (shader in shaders) {
-				if (shader.pipelineState != null) {
-					MetalNative.dispose_pipeline(shader.pipelineState);
-				}
 				if (shader.vertex != null) {
 					if (shader.vertex.globals != null) MetalNative.dispose_buffer(shader.vertex.globals);
-					if (shader.vertex.params != null) MetalNative.dispose_buffer(shader.vertex.params);
 				}
 				if (shader.fragment != null) {
 					if (shader.fragment.globals != null) MetalNative.dispose_buffer(shader.fragment.globals);
-					if (shader.fragment.params != null) MetalNative.dispose_buffer(shader.fragment.params);
 				}
 			}
 			shaders.clear();
@@ -317,8 +283,6 @@ class MetalDriver extends Driver {
 	override function begin(frame:Int) {
 		this.frame = frame;
 		texturesBound = false;
-		if (_tBuf == null && _tEnabled) { _tBuf = new StringBuf(); }
-		_t("BEGIN frame=" + frame);
 		// Reset flags for new frame
 		renderedToBackbuffer = false;
 		backbufferRenderPassCreated = false;
@@ -377,8 +341,6 @@ class MetalDriver extends Driver {
 	}
 
 	override function end() {
-		_t("END rtbb=" + renderedToBackbuffer + " enc=" + (currentRenderEncoder != null) + " cmd=" + (currentCommandBuffer != null));
-		_tEnd();
 		if (currentRenderEncoder != null) {
 			MetalNative.end_encoding(currentRenderEncoder);
 			currentRenderEncoder = null;
@@ -404,7 +366,6 @@ class MetalDriver extends Driver {
 	}
 
 	override function clear(?color:h3d.Vector4, ?depth:Float, ?stencil:Int) {
-		_t("CLEAR c=" + (color != null) + " d=" + depth + " s=" + stencil + " tgt=" + currentTargets.length + " layer=" + currentTargetLayer);
 		// Store clear color for use in render pass
 		if (color != null) {
 			clearColor.r = Std.int(color.r * 255);
@@ -462,34 +423,6 @@ class MetalDriver extends Driver {
 				tex.flags.set(WasCleared);
 			}
 		}
-	}
-
-	override function present() {
-		// If we have active Metal samples, render them
-		if (metalSamples != null && metalSamples.hasSampleModeActive()) {
-			// Update animation for samples that need it
-			metalSamples.updateAnimation();
-
-			// Get clear color from engine or use default
-			var clearColor = {r: 0, g: 0, b: 0, a: 255}; // Default black
-			try {
-				var engine = h3d.Engine.getCurrent();
-				if (engine != null) {
-					var bgColor = engine.backgroundColor;
-					// Metal uses 0xAARRGGBB format, not 0xRRGGBBAA
-					clearColor.a = (bgColor >> 24) & 0xFF;  // Alpha from high bits
-					clearColor.r = (bgColor >> 16) & 0xFF;  // Red
-					clearColor.g = (bgColor >> 8) & 0xFF;   // Green  
-					clearColor.b = bgColor & 0xFF;          // Blue from low bits
-				}
-			} catch (e:Dynamic) {
-				// Use default clear color if engine not available
-			}
-
-			// Render the current active sample mode
-			metalSamples.renderCurrentMode(clearColor);
-		}
-		// Default Metal presentation is handled by the native layer
 	}
 
 	// Buffer management
@@ -674,21 +607,9 @@ class MetalDriver extends Driver {
       try {
         vertexSource = shaderCompiler.run(shader.vertex.data);
       } catch(e:Dynamic) {
-        // Save error message to file
-        try {
-          var path = "/tmp/metal_vertex_shader_error_" + shader.id + ".txt";
-          sys.io.File.saveContent(path, "Error compiling vertex shader: " + Std.string(e));
-        } catch(e2:Dynamic) {}
         throw "Vertex shader generation failed for shader id=" + shader.id + ": " + Std.string(e);
       }
 
-      // Save shader source for debugging
-      try {
-        var path = "/tmp/metal_vertex_shader_" + shader.id + ".metal";
-        sys.io.File.saveContent(path, vertexSource);
-      } catch(e:Dynamic) {
-
-      }
       #if debug
 			compiled.vertex = new MetalShaderContext(null);
 			compiled.vertex.debugSource = vertexSource;
@@ -717,8 +638,6 @@ class MetalDriver extends Driver {
 					var buffer = MetalNative.create_buffer(bufferSize, 2);
 					compiled.vertex.paramsBuffers.push(buffer);
 				}
-				// Keep legacy single buffer for compatibility (uses first buffer)
-				compiled.vertex.params = compiled.vertex.paramsBuffers[0];
 				compiled.vertex.paramsContent = new hl.Bytes(singleDrawSize);
 			}
 
@@ -740,12 +659,6 @@ class MetalDriver extends Driver {
 		// Compile fragment shader using hxsl.MetalOut
 		if (shader.fragment != null && shader.fragment.data != null) {
 			var fragmentSource = shaderCompiler.run(shader.fragment.data);
-			
-			// Save shader source for debugging
-			try {
-				var path = "/tmp/metal_fragment_shader_" + shader.id + ".metal";
-				sys.io.File.saveContent(path, fragmentSource);
-			} catch(e:Dynamic) {}
 			
 			#if debug
 			if (compiled.fragment == null) compiled.fragment = new MetalShaderContext(null);
@@ -773,8 +686,6 @@ class MetalDriver extends Driver {
 					var buffer = MetalNative.create_buffer(bufferSize, 2);
 					compiled.fragment.paramsBuffers.push(buffer);
 				}
-				// Keep legacy single buffer for compatibility (uses first buffer)
-				compiled.fragment.params = compiled.fragment.paramsBuffers[0];
 				compiled.fragment.paramsContent = new hl.Bytes(singleDrawSize);
 			}
 			// Set up buffer types for fragment shader
@@ -806,20 +717,9 @@ class MetalDriver extends Driver {
 		try {
 			computeSource = shaderCompiler.run(shader.compute.data);
 		} catch(e:Dynamic) {
-			// Save error message to file
-			try {
-				var path = "/tmp/metal_compute_shader_error_" + shader.id + ".txt";
-				sys.io.File.saveContent(path, "Error compiling compute shader: " + Std.string(e));
-			} catch(e2:Dynamic) {}
 			throw "Compute shader generation failed for shader id=" + shader.id + ": " + Std.string(e);
 		}
 
-		// Save shader source for debugging
-		try {
-			var path = "/tmp/metal_compute_shader_" + shader.id + ".metal";
-			sys.io.File.saveContent(path, computeSource);
-		} catch(e:Dynamic) {}
-		
 		#if debug
 		compiled.vertex = new MetalShaderContext(null);
 		compiled.vertex.debugSource = computeSource;
@@ -854,7 +754,6 @@ class MetalDriver extends Driver {
 				var buffer = MetalNative.create_buffer(bufferSize, 2);
 				compiled.vertex.paramsBuffers.push(buffer);
 			}
-			compiled.vertex.params = compiled.vertex.paramsBuffers[0];
 			compiled.vertex.paramsContent = new hl.Bytes(singleDrawSize);
 		}
 
@@ -1015,7 +914,7 @@ class MetalDriver extends Driver {
 		                  blendSrc + "_" + blendDst + "_" + blendAlphaSrc + "_" + blendAlphaDst;
 		
 		// Check if we have a cached pipeline for this configuration
-		var pipeline = compiledShader.pipelineCacheStr.get(cacheKeyStr);
+		var pipeline = compiledShader.pipelineCache.get(cacheKeyStr);
 		if (pipeline != null) return pipeline;
 		
 		// Create new pipeline with correct stride and blend mode
@@ -1038,7 +937,7 @@ class MetalDriver extends Driver {
 		);
 		
 		if (pipeline != null) {
-			compiledShader.pipelineCacheStr.set(cacheKeyStr, pipeline);
+			compiledShader.pipelineCache.set(cacheKeyStr, pipeline);
 		}
 		
 		return pipeline;
@@ -1195,9 +1094,7 @@ class MetalDriver extends Driver {
 	}
 
 	override function draw(ibuf:h3d.Buffer, startIndex:Int, ntriangles:Int) {
-		_t("DRAW t=" + ntriangles + " tgt=" + (currentTargets.length == 0 ? "BB" : currentTargets.length + "t") + " enc=" + (currentRenderEncoder != null) + " bl=" + currentBlendSrc + "/" + currentBlendDst + " sh=" + (currentShader != null ? currentShader.id : -1));
 		if (currentRenderEncoder == null || currentShader == null || currentBuffer == null || currentRuntimeShader == null) {
-			_t("  SKIP: enc=" + (currentRenderEncoder != null) + " sh=" + (currentShader != null) + " buf=" + (currentBuffer != null) + " rs=" + (currentRuntimeShader != null));
 			return;
 		}
 
@@ -1387,8 +1284,6 @@ class MetalDriver extends Driver {
 	}
 
 	override function setRenderTarget(tex:Null<h3d.mat.Texture>, layer = 0, mipLevel = 0, depthBinding:h3d.Engine.DepthBinding = ReadWrite) {
-		var n = tex == null ? "BB" : (tex.name != null ? tex.name : tex.width + "x" + tex.height);
-		_t("SRT: " + n + " L=" + layer + " dep=" + depthBinding + " bbC=" + backbufferRenderPassCreated + " rBB=" + renderedToBackbuffer);
 		// If we're switching FROM backbuffer TO texture, unset the flag
 		// (it will be set again later if we actually draw to backbuffer)
 		var wasBackbuffer = (currentTargets.length == 0);
@@ -1601,7 +1496,6 @@ class MetalDriver extends Driver {
 	}
 
 	override function setRenderTargets(textures:Array<h3d.mat.Texture>, depthBinding:h3d.Engine.DepthBinding = ReadWrite) {
-		_t("SRTs: count=" + textures.length + " dep=" + depthBinding);
 		if (textures.length == 0) {
 			setRenderTarget(null, 0, 0, depthBinding);
 			return;
