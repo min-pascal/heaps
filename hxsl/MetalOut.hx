@@ -123,98 +123,47 @@ class MetalOut {
     add(varName(v));
   }
 
-  // Scan shader expression tree for InstanceID usage
-  function scanForInstanceId(e:TExpr):Bool {
+  // Scan shader expression tree for a specific TGlobal usage
+  function scanForGlobal(e:TExpr, global:TGlobal):Bool {
     if (e == null) return false;
     switch (e.e) {
       case TGlobal(g):
-        if (g == InstanceID) return true;
+        if (g == global) return true;
       case TArray(e1, e2):
-        if (scanForInstanceId(e1)) return true;
-        if (scanForInstanceId(e2)) return true;
+        if (scanForGlobal(e1, global)) return true;
+        if (scanForGlobal(e2, global)) return true;
       case TBinop(_, e1, e2):
-        if (scanForInstanceId(e1)) return true;
-        if (scanForInstanceId(e2)) return true;
+        if (scanForGlobal(e1, global)) return true;
+        if (scanForGlobal(e2, global)) return true;
       case TUnop(_, e1):
-        if (scanForInstanceId(e1)) return true;
-      case TVar(_):
-      // Variable reference
-      case TConst(_):
-      // Constant
-      case TIf(econd, eif, eelse):
-        if (scanForInstanceId(econd)) return true;
-        if (scanForInstanceId(eif)) return true;
-        if (eelse != null && scanForInstanceId(eelse)) return true;
-      case TCall(ef, args):
-        if (scanForInstanceId(ef)) return true;
-        for (a in args)
-          if (scanForInstanceId(a)) return true;
-      case TBlock(el):
-        for (ex in el)
-          if (scanForInstanceId(ex)) return true;
-      case TSwiz(e1, _):
-        if (scanForInstanceId(e1)) return true;
-      case TParenthesis(e1):
-        if (scanForInstanceId(e1)) return true;
-      case TMeta(_, _, e1):
-        if (scanForInstanceId(e1)) return true;
-      case TFor(_, it, loop):
-        if (scanForInstanceId(it)) return true;
-        if (scanForInstanceId(loop)) return true;
-      case TWhile(cond, loop, _):
-        if (scanForInstanceId(cond)) return true;
-        if (scanForInstanceId(loop)) return true;
-      case TReturn(e1):
-        if (e1 != null && scanForInstanceId(e1)) return true;
-      case TDiscard:
-      // No sub-expressions
-      default:
-      // Other cases
-    }
-    return false;
-  }
-
-  // Scan shader expression tree for VertexID usage
-  function scanForVertexId(e:TExpr):Bool {
-    if (e == null) return false;
-    switch (e.e) {
-      case TGlobal(g):
-        if (g == VertexID) return true;
-      case TArray(e1, e2):
-        if (scanForVertexId(e1)) return true;
-        if (scanForVertexId(e2)) return true;
-      case TBinop(_, e1, e2):
-        if (scanForVertexId(e1)) return true;
-        if (scanForVertexId(e2)) return true;
-      case TUnop(_, e1):
-        if (scanForVertexId(e1)) return true;
+        if (scanForGlobal(e1, global)) return true;
       case TVar(_):
       case TConst(_):
       case TIf(econd, eif, eelse):
-        if (scanForVertexId(econd)) return true;
-        if (scanForVertexId(eif)) return true;
-        if (eelse != null && scanForVertexId(eelse)) return true;
+        if (scanForGlobal(econd, global)) return true;
+        if (scanForGlobal(eif, global)) return true;
+        if (eelse != null && scanForGlobal(eelse, global)) return true;
       case TCall(ef, args):
-        if (scanForVertexId(ef)) return true;
+        if (scanForGlobal(ef, global)) return true;
         for (a in args)
-          if (scanForVertexId(a)) return true;
+          if (scanForGlobal(a, global)) return true;
       case TBlock(el):
         for (ex in el)
-          if (scanForVertexId(ex)) return true;
+          if (scanForGlobal(ex, global)) return true;
       case TSwiz(e1, _):
-        if (scanForVertexId(e1)) return true;
+        if (scanForGlobal(e1, global)) return true;
       case TParenthesis(e1):
-        if (scanForVertexId(e1)) return true;
+        if (scanForGlobal(e1, global)) return true;
       case TMeta(_, _, e1):
-        if (scanForVertexId(e1)) return true;
+        if (scanForGlobal(e1, global)) return true;
       case TFor(_, it, loop):
-        if (scanForVertexId(it)) return true;
-        if (scanForVertexId(loop)) return true;
+        if (scanForGlobal(it, global)) return true;
+        if (scanForGlobal(loop, global)) return true;
       case TWhile(cond, loop, _):
-        if (scanForVertexId(cond)) return true;
-        if (scanForVertexId(loop)) return true;
+        if (scanForGlobal(cond, global)) return true;
+        if (scanForGlobal(loop, global)) return true;
       case TReturn(e1):
-        if (e1 != null && scanForVertexId(e1)) return true;
+        if (e1 != null && scanForGlobal(e1, global)) return true;
       case TDiscard:
       default:
     }
@@ -1232,8 +1181,8 @@ class MetalOut {
       add("};\n\n");
 
       // Check if shader uses instance_id
-      usesInstanceId = scanForInstanceId(f.expr);
-      usesVertexId = scanForVertexId(f.expr);
+      usesInstanceId = scanForGlobal(f.expr, InstanceID);
+      usesVertexId = scanForGlobal(f.expr, VertexID);
 
       // Check if any input variables have PerInstance qualifier
       // If so, we need to reserve buffer index 1 for instance data
