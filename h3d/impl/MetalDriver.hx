@@ -133,6 +133,7 @@ private class MetalNative {
 	public static function set_compute_texture(texture:Dynamic, index:Int):Void {}
 	public static function set_compute_buffer(buffer:Dynamic, index:Int):Void {}
 	public static function dispatch_compute(cmdBuffer:Dynamic, x:Int, y:Int, z:Int):Bool { return false; }
+	public static function dispatch_compute_indirect(cmdBuffer:Dynamic, indirectBuffer:Dynamic, byteOffset:Int):Bool { return false; }
 	public static function memory_barrier(cmdBuffer:Dynamic):Void {}
 }
 
@@ -2024,6 +2025,99 @@ class MetalDriver extends Driver {
 		}
 
 		// Add memory barrier if requested (ensures compute writes are visible)
+		if (barrier) {
+			memoryBarrier();
+		}
+
+		// Resume render encoder if we had one
+		if (hadEncoder && currentTargets.length == 0) {
+			currentRenderEncoder = MetalNative.resume_render_pass(currentCommandBuffer);
+			if (currentRenderEncoder != null) {
+				var engine = h3d.Engine.getCurrent();
+				if (engine != null) {
+					MetalNative.set_viewport(currentRenderEncoder, 0.0, 0.0, cast engine.width, cast engine.height);
+				}
+			}
+		}
+	}
+
+	function computeDispatchIndirect(buffer:h3d.Buffer, byteOffset:Int = 0, barrier:Bool = true) {
+		if (currentCommandBuffer == null) {
+			throw "Cannot dispatch compute indirect without an active command buffer";
+		}
+
+		if (buffer == null || buffer.vbuf == null) {
+			throw "computeDispatchIndirect: null indirect buffer";
+		}
+
+		if (buffer.format != hxd.BufferFormat.INDEX32) {
+			throw "computeDispatchIndirect: buffer must use INDEX32 format (Metal expects uint32 dispatch args)";
+		}
+
+		if (byteOffset < 0) {
+			throw "computeDispatchIndirect: byteOffset must be non-negative";
+		}
+
+		if (byteOffset % 4 != 0) {
+			throw "computeDispatchIndirect: byteOffset must be 4-byte aligned";
+		}
+
+		if (byteOffset + 12 > buffer.getMemSize()) {
+			throw "computeDispatchIndirect: byteOffset + 12 exceeds buffer size";
+		}
+
+		if (currentShader == null || currentShader.vertex == null) {
+			throw "No compute shader selected";
+		}
+
+		if (currentRuntimeShader == null) {
+			throw "No runtime shader available";
+		}
+
+		// End current render encoder if active
+		var hadEncoder = currentRenderEncoder != null;
+		if (hadEncoder) {
+			MetalNative.end_encoding(currentRenderEncoder);
+			currentRenderEncoder = null;
+		}
+
+		// Set compute pipeline from current shader
+		MetalNative.set_compute_pipeline(currentShader.vertex.shader);
+
+		// Bind parameter buffer if available
+		var bufferIndex = 0;
+		if (currentShader.vertex.paramsBuffers != null && currentShader.vertex.paramsSize > 0) {
+			var currentBuffer = currentShader.vertex.paramsBuffers[currentFrameIndex];
+			if (currentBuffer != null) {
+				var offset = drawCallIndex * (currentShader.vertex.paramsSize << 4);
+				MetalNative.set_compute_buffer(currentBuffer, bufferIndex);
+				bufferIndex++;
+			}
+		}
+
+		// Bind compute buffers
+		for (buf in pendingComputeBuffers) {
+			if (buf != null && buf.vbuf != null) {
+				MetalNative.set_compute_buffer(buf.vbuf, bufferIndex);
+				bufferIndex++;
+			}
+		}
+
+		// Bind compute textures
+		var texIndex = 0;
+		for (tex in pendingComputeTextures) {
+			if (tex != null && tex.t != null && tex.t.t != null) {
+				MetalNative.set_compute_texture(tex.t.t, texIndex);
+				texIndex++;
+			}
+		}
+
+		// Dispatch compute shader using indirect buffer
+		if (!MetalNative.dispatch_compute_indirect(currentCommandBuffer, buffer.vbuf, byteOffset)) {
+			throw "Failed to dispatch compute shader (indirect)";
+		}
+
+		// Add memory barrier if requested
 		if (barrier) {
 			memoryBarrier();
 		}
