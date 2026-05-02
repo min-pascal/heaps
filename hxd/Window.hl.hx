@@ -117,6 +117,9 @@ class Window {
 		#if heaps_vulkan
 		if( USE_VULKAN ) sdlFlags |= sdl.Window.SDL_WINDOW_VULKAN;
 		#end
+		#if metal
+		sdlFlags |= sdl.Window.SDL_WINDOW_METAL;
+		#end
 		var posX = if (winX != null) winX else sdl.Window.SDL_WINDOWPOS_CENTERED;
 		var posY = if (winY != null) winY else sdl.Window.SDL_WINDOWPOS_CENTERED;
 		window = new sdl.Window(title, width, height, posX, posY, sdlFlags);
